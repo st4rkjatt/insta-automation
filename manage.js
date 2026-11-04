@@ -180,12 +180,24 @@ async function handleBioUpdate(page, account) {
  */
 async function handleFourBatchesUpload(context) {
   banner('4-BATCH AUTOMATED REEL UPLOAD (20 REELS)');
-  logInfo('Starting automated 4-batch upload: (R1 → R5) x 4 times...');
-  const result = await runFourBatchesUpload(context, {
-    caption: CONFIG.reelCaption,
-    coverPhotoPath: CONFIG.coverPhoto,
-  });
-  logSuccess(`4-Batch pipeline finished: ${result.successful}/${result.total} reels uploaded successfully.`);
+  console.log('Select upload speed mode:');
+  console.log('  [1] ⚡ Fast Non-Blocking Mode (Recommended: Opens next tab immediately after Share)');
+  console.log('  [2] 🚶 Sequential Safe Mode (Waits for each reel to finish uploading before opening next)');
+  divider();
+
+  const mode = await promptInput('Enter mode [1-2]', '1');
+
+  if (mode === '1') {
+    const { uploadAllReelsPipeline } = require('./signup');
+    await uploadAllReelsPipeline(context, CONFIG.reelCaption);
+  } else {
+    logInfo('Starting automated 4-batch upload: (R1 → R5) x 4 times...');
+    const result = await runFourBatchesUpload(context, {
+      caption: CONFIG.reelCaption,
+      coverPhotoPath: CONFIG.coverPhoto,
+    });
+    logSuccess(`4-Batch pipeline finished: ${result.successful}/${result.total} reels uploaded successfully.`);
+  }
 }
 
 /**

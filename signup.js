@@ -1,18 +1,19 @@
 /**
- * Instagram End-to-End Sign-Up & Bio Automation (Infinite Loop)
+ * Instagram End-to-End Autonomous Sign-Up & 20 Reels Fast Automation Loop
  *
- * Flow:
- * 1. Open Instagram Sign-Up page.
- * 2. Ask user for email via browser popup.
- * 3. Fill details (dynamic username, birthday, password, name).
- * 4. Submit & auto-change username if already taken.
- * 5. Handle OTP (if prompted) or direct login.
- * 6. Wait for "Turn on notifications" popup and click "Not Now".
- * 7. Navigate to Edit Profile page.
- * 8. Add Bio text, upload profile photo, and click Submit.
- * 9. Upload 20 reels in pipeline fashion (one tab at a time).
- * 10. Wait for user verification, then logout.
- * 11. Repeat the cycle for next account until user stops with Ctrl+C.
+ * Exact 5-Step Process:
+ * 1. Create account (User provides only Email & OTP; script automates username, password, birthday, name, submit, and popups).
+ * 2. Upload profile photo (profile.jpg) & Japanese bio.
+ * 3. Upload all 20 reels (R1-R5 x 4) in fast non-blocking mode:
+ *    - Opens Tab 1 -> attaches R1 -> sets Cover.jpg -> sets CAPTION.txt -> clicks Share.
+ *    - Waits 2.5s for upload to initiate over network.
+ *    - Immediately opens Tab 2 for R2 without waiting for Tab 1 to finish uploading.
+ *    - Repeats for all 20 reels across open tabs (all uploading concurrently in background).
+ * 4. Shows "Done" or "Not Done" verification pop-up (both on browser screen and terminal):
+ *    - User inspects tabs/profile manually.
+ *    - If "Not Done": Keeps tabs open, waits, and re-prompts.
+ *    - If "Done": Closes all 20 upload tabs cleanly.
+ * 5. Logs out of account and restarts Step 1 to create the next account in an infinite loop!
  */
 
 const fs = require('fs');
@@ -41,27 +42,71 @@ function resolveBrowserPath() {
 const CONFIG = {
   signupUrl: 'https://www.instagram.com/accounts/emailsignup/',
   editProfileUrl: 'https://www.instagram.com/accounts/edit/',
+  homeUrl: 'https://www.instagram.com/',
   fullName: 'Ayesha',
   baseUsername: 'link.in.bio.',
   bioText: `TVアニメ『紫禁城・御猫房』10月10日放送開始! 宮廷に隠された秘密とは? みんなは観たい?\nコメントで教えてね`,
-  reelCaption: `! TVアニメ『紫禁・御猫房』10月10日放送開始宮廷に隠された秘密とは? みんなは観たい? コメントで教えてね!\n\n#紫禁御猫房 #新作アニメ\n\n#拡散希望 #猫\n\n《紫禁・御猫房》\n\n#紫禁御猫房\n\n新作アニメ\n\n拡散希望\n\n猫`,
   browserPath: resolveBrowserPath(),
   headless: false,
-  slowMo: 100,
+  slowMo: 60,
 
-  // ── Reel file settings ──────────────────────────
+  // File paths
   reelsFolder: path.join(__dirname, 'Reels'),
   reelPrefix: 'R',
   reelExtension: '.mp4',
   numUniqueReels: 5,
   totalReelsToUpload: 20,
   coverPhoto: path.join(__dirname, 'Reels', 'Cover.jpg'),
+  captionFile: path.join(__dirname, 'Reels', 'CAPTION.txt'),
   profilePhoto: path.join(__dirname, 'profile.jpg'),
+  accountsFile: path.join(__dirname, 'accounts.txt'),
+  logFile: path.join(__dirname, 'automation.log'),
 };
 
+/**
+ * Loads reel caption dynamically from Reels/CAPTION.txt
+ */
+function loadReelCaption() {
+  if (fs.existsSync(CONFIG.captionFile)) {
+    try {
+      const text = fs.readFileSync(CONFIG.captionFile, 'utf8').trim();
+      if (text.length > 0) return text;
+    } catch { }
+  }
+  return `! TVアニメ『紫禁・御猫房』10月10日放送開始宮廷に隠された秘密とは? みんなは観たい? コメントで教えてね!\n\n#紫禁御猫房 #新作アニメ\n\n#拡散希望 #猫\n\n《紫禁・御猫房》\n\n#紫禁御猫房\n\n新作アニメ\n\n拡散希望\n\n猫`;
+}
+
 // ==========================================
-// UTILITY FUNCTIONS
+// TERMINAL READLINE HELPER (Persistent)
 // ==========================================
+let activeRl = null;
+
+function getRL() {
+  if (!activeRl || activeRl.closed) {
+    activeRl = readline.createInterface({ input, output });
+  }
+  return activeRl;
+}
+
+function closeReadline() {
+  if (activeRl && !activeRl.closed) {
+    activeRl.close();
+    activeRl = null;
+  }
+}
+
+async function promptTerminalInput(message) {
+  const rl = getRL();
+  const val = await rl.question(message);
+  return (val || '').trim();
+}
+
+function logMessage(text) {
+  console.log(text);
+  try {
+    fs.appendFileSync(CONFIG.logFile, `[${new Date().toISOString()}] ${text}\n`);
+  } catch { }
+}
 
 /** Generates a random 6-digit numeric password e.g. 482736 */
 function generateDynamicPassword() {
@@ -77,133 +122,23 @@ function generateDynamicUsername(base = 'link.in.bio.') {
   return `${base}${suffix}`;
 }
 
-/** CLI Prompt Helper */
-async function promptTerminalInput(message) {
-  const rl = readline.createInterface({ input, output });
-  try {
-    const value = await rl.question(message);
-    return value.trim();
-  } finally {
-    rl.close();
-  }
-}
-
-/** Helper: safe click with logging — tries to find & click, returns true/false */
-async function safeClick(locator, description, timeout = 5000) {
-  try {
-    if (await locator.isVisible({ timeout }).catch(() => false)) {
-      await locator.click({ force: true });
-      return true;
-    }
-  } catch { }
-  return false;
-}
-
-/** Helper: wait & screenshot for debugging */
 async function debugScreenshot(page, label) {
   try {
     const screenshotDir = path.join(__dirname, 'debug_screenshots');
     if (!fs.existsSync(screenshotDir)) fs.mkdirSync(screenshotDir, { recursive: true });
     const filename = `${label}_${Date.now()}.png`;
     await page.screenshot({ path: path.join(screenshotDir, filename) });
-    console.log(`  📸 Debug screenshot: debug_screenshots/${filename}`);
   } catch { }
 }
 
 // ==========================================
-// BROWSER POPUP FOR EMAIL
+// POPUP DISMISSAL
 // ==========================================
-async function promptForEmailInBrowser(page, cycleNumber = 1) {
-  console.log('🖥️ [POPUP] Asking for email on browser screen...');
-  return await page.evaluate((cycleNum) => {
-    return new Promise((resolve) => {
-      const old = document.getElementById('automation-email-overlay');
-      if (old) old.remove();
-
-      const overlay = document.createElement('div');
-      overlay.id = 'automation-email-overlay';
-      overlay.style.cssText = 'position:fixed;top:0;left:0;width:100vw;height:100vh;background:rgba(0,0,0,0.75);z-index:9999999;display:flex;align-items:center;justify-content:center;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif';
-
-      overlay.innerHTML = `
-        <div style="background:#fff;padding:32px;border-radius:16px;box-shadow:0 20px 40px rgba(0,0,0,0.35);width:450px;max-width:90%;text-align:center;border:1px solid #e0e0e0;">
-          <div style="font-size:28px;margin-bottom:8px;">📧</div>
-          <h2 style="margin:0 0 8px 0;font-size:20px;font-weight:700;color:#111;">Instagram Account #${cycleNum}</h2>
-          <p style="margin:0 0 20px 0;font-size:14px;color:#555;line-height:1.4;">Enter the email address for this new account:</p>
-          <input id="automation-email-input" type="email" placeholder="name@example.com" autofocus style="width:100%;box-sizing:border-box;padding:14px 16px;font-size:16px;border:2px solid #0095f6;border-radius:10px;outline:none;margin-bottom:16px;" />
-          <button id="automation-email-submit-btn" style="width:100%;background:#0095f6;color:white;border:none;padding:14px;font-size:15px;font-weight:600;border-radius:10px;cursor:pointer;">Continue Sign-Up</button>
-        </div>
-      `;
-
-      document.body.appendChild(overlay);
-      const inp = document.getElementById('automation-email-input');
-      const btn = document.getElementById('automation-email-submit-btn');
-      inp.focus();
-
-      function submit() {
-        const val = inp.value.trim();
-        if (val && val.includes('@')) { overlay.remove(); resolve(val); }
-        else { inp.style.borderColor = '#ed4956'; inp.placeholder = 'Please enter a valid email address'; }
-      }
-      btn.addEventListener('click', submit);
-      inp.addEventListener('keydown', (e) => { if (e.key === 'Enter') submit(); });
-    });
-  }, cycleNumber);
-}
-
-// ==========================================
-// COOKIE CONSENT
-// ==========================================
-async function handleCookieConsent(page) {
-  try {
-    const cookieBtn = page.locator(
-      'button:has-text("Allow all cookies"), button:has-text("Allow essential and optional cookies"), button:has-text("Decline optional cookies")'
-    ).first();
-    if (await cookieBtn.isVisible({ timeout: 2500 })) {
-      console.log('[INFO] Dismissing cookie banner...');
-      await cookieBtn.click();
-    }
-  } catch { }
-}
-
-// ==========================================
-// BIRTHDAY SELECTION
-// ==========================================
-async function fillBirthdayIfPresent(page) {
-  console.log('[INFO] Selecting Birthday (Day, Month, Year)...');
-
-  const dayBox = page.locator('div[role="combobox"][aria-label*="Day"], div[role="combobox"]:has-text("Day")').first();
-  if (await dayBox.isVisible({ timeout: 3000 })) {
-    await dayBox.click();
-    await page.waitForTimeout(300);
-    await page.getByRole('option', { name: '15', exact: true }).click();
-    await page.waitForTimeout(300);
-  }
-
-  const monthBox = page.locator('div[role="combobox"][aria-label*="Month"], div[role="combobox"]:has-text("Month")').first();
-  if (await monthBox.isVisible({ timeout: 3000 })) {
-    await monthBox.click();
-    await page.waitForTimeout(300);
-    await page.getByRole('option', { name: 'January', exact: true }).click();
-    await page.waitForTimeout(300);
-  }
-
-  const yearBox = page.locator('div[role="combobox"][aria-label*="Year"], div[role="combobox"]:has-text("Year")').first();
-  if (await yearBox.isVisible({ timeout: 3000 })) {
-    await yearBox.click();
-    await page.waitForTimeout(300);
-    await page.getByRole('option', { name: '1998', exact: true }).click();
-    await page.waitForTimeout(300);
-  }
-}
-
-// ==========================================
-// DISMISS ALL POPUPS (Not Now, Save info, Skip, Cancel, Close, etc.)
-// ==========================================
-async function dismissAllPopups(page, maxRounds = 8) {
+async function dismissAllPopups(page, maxRounds = 6) {
   for (let r = 0; r < maxRounds; r++) {
     let closedAny = false;
 
-    // 0. DIRECT DOM CLICK (Most reliable — directly clicks "Not Now" / "Save info" in page context)
+    // Direct DOM evaluate (most reliable in modern Chromium)
     try {
       const clickedText = await page.evaluate(() => {
         const dismissTargets = [
@@ -211,10 +146,9 @@ async function dismissAllPopups(page, maxRounds = 8) {
           'save info', 'save information', '情報を保存',
           'skip', 'スキップ',
           'cancel', 'キャンセル',
-          'close', '閉じる'
+          'close', '閉じる',
         ];
 
-        // 1. Scan all buttons and role="button" elements
         const candidates = Array.from(document.querySelectorAll('button, [role="button"], a[role="button"], span[role="button"]'));
         for (const el of candidates) {
           const text = (el.innerText || el.textContent || '').trim().toLowerCase();
@@ -224,7 +158,6 @@ async function dismissAllPopups(page, maxRounds = 8) {
           }
         }
 
-        // 2. Scan inside any dialog modals specifically
         const dialogs = document.querySelectorAll('div[role="dialog"]');
         for (const dlg of dialogs) {
           const buttons = dlg.querySelectorAll('button, div[role="button"], span[role="button"]');
@@ -236,150 +169,183 @@ async function dismissAllPopups(page, maxRounds = 8) {
             }
           }
         }
-
         return null;
       });
 
       if (clickedText) {
-        console.log(`🔔 [POPUP] Dismissed "${clickedText}" via DOM click`);
-        await page.waitForTimeout(1500);
+        await page.waitForTimeout(1000);
         closedAny = true;
         continue;
       }
     } catch { }
 
-    // 1. Playwright Locator fallback: "Not Now" / "後で" / "今はしない"
-    const notNow = page.locator(
-      'button:has-text("Not Now"), button:has-text("Not now"), ' +
-      'button:has-text("後で"), button:has-text("今はしない"), ' +
-      '[role="button"]:has-text("Not now"), [role="button"]:has-text("Not Now"), ' +
-      '[role="button"]:has-text("後で"), [role="button"]:has-text("今はしない"), ' +
-      'div[role="dialog"] button:has-text("Not Now"), div[role="dialog"] button:has-text("Not now")'
-    );
-    if (await notNow.count() > 0) {
-      for (let i = 0; i < await notNow.count(); i++) {
-        const item = notNow.nth(i);
-        if (await item.isVisible().catch(() => false)) {
-          console.log('🔔 [POPUP] Dismissed "Not Now"...');
-          await item.click({ force: true }).catch(() => { });
-          await page.waitForTimeout(1500);
-          closedAny = true;
-          break;
-        }
-      }
-      if (closedAny) continue;
-    }
+    // Fallback locator for Not Now
+    const notNow = page.locator([
+      'button:has-text("Not Now")',
+      'button:has-text("Not now")',
+      'button:has-text("後で")',
+      'button:has-text("今はしない")',
+      'div[role="dialog"] button:has-text("Not Now")',
+      'div[role="dialog"] button:has-text("Not now")',
+      'button:has-text("Skip")',
+      'button:has-text("スキップ")',
+    ].join(', ')).first();
 
-    // 2. Playwright Locator: "Save info" / "情報を保存"
-    const saveInfo = page.locator(
-      'button:has-text("Save info"), button:has-text("Save Info"), ' +
-      'button:has-text("情報を保存"), [role="button"]:has-text("Save info"), ' +
-      'div[role="dialog"] button:has-text("Save info"), div[role="dialog"] button:has-text("Save Info")'
-    );
-    if (await saveInfo.count() > 0) {
-      for (let i = 0; i < await saveInfo.count(); i++) {
-        const item = saveInfo.nth(i);
-        if (await item.isVisible().catch(() => false)) {
-          console.log('🔔 [POPUP] Dismissed "Save info"...');
-          await item.click({ force: true }).catch(() => { });
-          await page.waitForTimeout(1500);
-          closedAny = true;
-          break;
-        }
-      }
-      if (closedAny) continue;
-    }
-
-    // 3. Playwright Locator: "Skip" / "スキップ"
-    const skip = page.locator(
-      'button:has-text("Skip"), button:has-text("スキップ"), ' +
-      'div[role="button"]:has-text("Skip"), div[role="button"]:has-text("スキップ")'
-    );
-    if (await skip.count() > 0) {
-      for (let i = 0; i < await skip.count(); i++) {
-        const item = skip.nth(i);
-        if (await item.isVisible().catch(() => false)) {
-          console.log('🔔 [POPUP] Dismissed "Skip"...');
-          await item.click({ force: true }).catch(() => { });
-          await page.waitForTimeout(1500);
-          closedAny = true;
-          break;
-        }
-      }
-      if (closedAny) continue;
-    }
-
-    // 4. Playwright Locator: Close icon (X) in dialogs
-    const closeIcon = page.locator(
-      'div[role="dialog"] svg[aria-label="Close"], div[role="dialog"] svg[aria-label="閉じる"], ' +
-      'div[role="dialog"] button:has(svg[aria-label="Close"]), div[role="dialog"] button:has(svg[aria-label="閉じる"])'
-    ).first();
-    if (await closeIcon.isVisible({ timeout: 800 }).catch(() => false)) {
-      console.log('🔔 [POPUP] Dismissed dialog close icon (X)...');
-      await closeIcon.click({ force: true }).catch(() => { });
-      await page.waitForTimeout(1500);
+    if (await notNow.isVisible({ timeout: 600 }).catch(() => false)) {
+      await notNow.click({ force: true }).catch(() => { });
+      await page.waitForTimeout(1000);
       closedAny = true;
       continue;
-    }
-
-    // 5. Escape key press as fallback
-    if (!closedAny && r === 0) {
-      await page.keyboard.press('Escape').catch(() => { });
-      await page.waitForTimeout(500);
     }
 
     if (!closedAny) break;
   }
 }
 
-// Backward compatibility alias
-const dismissNotificationAndSavePopups = dismissAllPopups;
+async function handleCookieConsent(page) {
+  try {
+    const cookieBtn = page.locator(
+      'button:has-text("Allow all cookies"), button:has-text("Allow essential and optional cookies"), button:has-text("Decline optional cookies")'
+    ).first();
+    if (await cookieBtn.isVisible({ timeout: 2500 })) {
+      await cookieBtn.click();
+      await page.waitForTimeout(1000);
+    }
+  } catch { }
+}
 
-// ==========================================
-// CHECKPOINT DETECTION
-// ==========================================
 async function checkAndHandleSuspendedCheckpoint(page) {
   const currentUrl = page.url();
   const isSuspended =
     currentUrl.includes('/suspended') ||
     currentUrl.includes('/challenge') ||
-    (await page.locator('text="Confirm that you\'re human"').isVisible({ timeout: 1500 }).catch(() => false));
+    (await page.locator('text="Confirm that you\'re human"').isVisible({ timeout: 1000 }).catch(() => false));
 
   if (!isSuspended) return false;
 
-  console.log('\n🚨 [CHECKPOINT DETECTED] "Confirm that you\'re human" screen.');
-  console.log('Logging out and preparing next cycle...');
-
+  console.log('\n🚨 [CHECKPOINT DETECTED] Instagram suspended or challenge screen.');
   try {
-    const menuBtn = page.locator(
-      'svg[aria-label="Settings"], svg[aria-label="More options"], svg[aria-label="Menu"], header svg, header div[role="button"]'
-    ).last();
-    if (await menuBtn.isVisible({ timeout: 3000 }).catch(() => false)) {
-      await menuBtn.click();
-      await page.waitForTimeout(1000);
-    }
-    const logoutOption = page.locator('div[role="dialog"] :text-matches("Log out", "i")').first();
-    if (await logoutOption.isVisible({ timeout: 4000 }).catch(() => false)) {
-      await logoutOption.click();
-      await page.waitForTimeout(2000);
-    }
-  } catch {
     await page.goto('https://www.instagram.com/accounts/logout/', { waitUntil: 'domcontentloaded' }).catch(() => { });
-  }
+  } catch { }
   return true;
 }
 
 // ==========================================
-// USERNAME VERIFICATION & SUBMISSION
+// STEP 1: ACCOUNT CREATION HELPERS
 // ==========================================
+
+/**
+ * Prompts user for email via in-browser popup OR terminal input concurrently
+ */
+async function promptForEmail(page, cycleNumber = 1) {
+  console.log('\n════════════════════════════════════════════════════════════');
+  console.log(`📧 [EMAIL REQUIRED] Instagram Account #${cycleNumber}`);
+  console.log('   Please enter the email in the browser popup OR terminal below:');
+  console.log('════════════════════════════════════════════════════════════');
+
+  // 1. Browser popup promise
+  const browserPromise = page.evaluate((cycleNum) => {
+    return new Promise((resolve) => {
+      const old = document.getElementById('automation-email-overlay');
+      if (old) old.remove();
+
+      const overlay = document.createElement('div');
+      overlay.id = 'automation-email-overlay';
+      overlay.style.cssText =
+        'position:fixed;top:0;left:0;width:100vw;height:100vh;background:rgba(0,0,0,0.75);z-index:9999999;display:flex;align-items:center;justify-content:center;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif';
+
+      overlay.innerHTML = `
+        <div style="background:#fff;padding:32px;border-radius:16px;box-shadow:0 20px 40px rgba(0,0,0,0.35);width:450px;max-width:90%;text-align:center;border:1px solid #e0e0e0;">
+          <div style="font-size:32px;margin-bottom:8px;">📧</div>
+          <h2 style="margin:0 0 8px 0;font-size:20px;font-weight:700;color:#111;">Instagram Account #${cycleNum}</h2>
+          <p style="margin:0 0 20px 0;font-size:14px;color:#555;line-height:1.4;">Enter the email address for this new account:</p>
+          <input id="automation-email-input" type="email" placeholder="name@example.com" autofocus style="width:100%;box-sizing:border-box;padding:14px 16px;font-size:16px;border:2px solid #0095f6;border-radius:10px;outline:none;margin-bottom:16px;" />
+          <button id="automation-email-submit-btn" style="width:100%;background:#0095f6;color:white;border:none;padding:14px;font-size:15px;font-weight:600;border-radius:10px;cursor:pointer;">Continue Sign-Up</button>
+        </div>
+      `;
+
+      document.body.appendChild(overlay);
+      const inp = document.getElementById('automation-email-input');
+      const btn = document.getElementById('automation-email-submit-btn');
+      setTimeout(() => inp && inp.focus(), 250);
+
+      function submit() {
+        const val = (inp.value || '').trim();
+        if (val && val.includes('@')) {
+          overlay.remove();
+          resolve(val);
+        } else {
+          inp.style.borderColor = '#ed4956';
+          inp.placeholder = 'Please enter a valid email address';
+        }
+      }
+      btn.addEventListener('click', submit);
+      inp.addEventListener('keydown', (e) => {
+        if (e.key === 'Enter') submit();
+      });
+    });
+  }, cycleNumber).catch(() => null);
+
+  // 2. Terminal input promise
+  const rl = getRL();
+  const terminalPromise = rl.question(`>> Enter email for Account #${cycleNumber}: `).then((val) => {
+    return (val || '').trim();
+  });
+
+  const winner = await Promise.race([
+    browserPromise.then((email) => (email ? { source: 'browser', email } : new Promise(() => { }))),
+    terminalPromise.then((email) => ({ source: 'terminal', email })),
+  ]);
+
+  // Clean up browser popup if answered via terminal
+  await page.evaluate(() => {
+    const old = document.getElementById('automation-email-overlay');
+    if (old) old.remove();
+  }).catch(() => { });
+
+  return winner.email;
+}
+
+/**
+ * Birthday selection (Jan 15, 1998)
+ */
+async function fillBirthdayIfPresent(page) {
+  console.log('[INFO] Selecting Birthday (Day: 15, Month: January, Year: 1998)...');
+  const dayBox = page.locator('div[role="combobox"][aria-label*="Day"], div[role="combobox"]:has-text("Day")').first();
+  if (await dayBox.isVisible({ timeout: 2500 })) {
+    await dayBox.click();
+    await page.waitForTimeout(200);
+    await page.getByRole('option', { name: '15', exact: true }).click().catch(() => { });
+    await page.waitForTimeout(200);
+  }
+
+  const monthBox = page.locator('div[role="combobox"][aria-label*="Month"], div[role="combobox"]:has-text("Month")').first();
+  if (await monthBox.isVisible({ timeout: 2500 })) {
+    await monthBox.click();
+    await page.waitForTimeout(200);
+    await page.getByRole('option', { name: 'January', exact: true }).click().catch(() => { });
+    await page.waitForTimeout(200);
+  }
+
+  const yearBox = page.locator('div[role="combobox"][aria-label*="Year"], div[role="combobox"]:has-text("Year")').first();
+  if (await yearBox.isVisible({ timeout: 2500 })) {
+    await yearBox.click();
+    await page.waitForTimeout(200);
+    await page.getByRole('option', { name: '1998', exact: true }).click().catch(() => { });
+    await page.waitForTimeout(200);
+  }
+}
+
+/**
+ * Submits sign-up form and auto-changes username if taken
+ */
 async function submitWithUsernameVerification(page, usernameInput, submitBtn, base, maxRetries = 10, currentUsername) {
   for (let attempt = 1; attempt <= maxRetries; attempt++) {
     if (await checkAndHandleSuspendedCheckpoint(page)) return null;
 
     console.log(`[SUBMIT] Attempt ${attempt}/${maxRetries}: Submitting sign-up form...`);
-
     if (!page.url().includes('emailsignup')) {
-      console.log('[INFO] Navigated away from sign-up page.');
+      console.log('[INFO] Form accepted! Moved past sign-up page.');
       return currentUsername;
     }
 
@@ -390,11 +356,13 @@ async function submitWithUsernameVerification(page, usernameInput, submitBtn, ba
     }
 
     await submitBtn.click().catch(() => { });
-    await page.waitForTimeout(3500);
+    await page.waitForTimeout(3000);
 
     if (await checkAndHandleSuspendedCheckpoint(page)) return null;
 
-    const usernameError = page.locator('span:has-text("is not available"), span:has-text("already taken"), [role="alert"]:has-text("not available")').first();
+    const usernameError = page.locator(
+      'span:has-text("is not available"), span:has-text("already taken"), [role="alert"]:has-text("not available")'
+    ).first();
     const isTaken = await usernameError.isVisible({ timeout: 2000 }).catch(() => false);
 
     if (isTaken) {
@@ -403,7 +371,7 @@ async function submitWithUsernameVerification(page, usernameInput, submitBtn, ba
       await usernameInput.click({ clickCount: 3 });
       await usernameInput.fill('');
       await usernameInput.fill(currentUsername);
-      await page.waitForTimeout(1500);
+      await page.waitForTimeout(1000);
       continue;
     }
 
@@ -415,140 +383,164 @@ async function submitWithUsernameVerification(page, usernameInput, submitBtn, ba
   return currentUsername;
 }
 
+/**
+ * Handles OTP verification: user can enter on Instagram screen OR in terminal
+ */
+async function handleOtpVerification(page) {
+  const otpSelector = [
+    'input[name="email_confirmation_code"]',
+    'input[name="verificationCode"]',
+    'input[autocomplete="one-time-code"]',
+    'input[placeholder*="confirmation code" i]',
+    'input[placeholder*="Code" i]',
+    'input[maxlength="6"]',
+  ].join(', ');
+
+  console.log('\n╔════════════════════════════════════════════════════════════╗');
+  console.log('║  🔑 OTP VERIFICATION REQUIRED                             ║');
+  console.log('╠════════════════════════════════════════════════════════════╣');
+  console.log('║  Enter the OTP directly on the browser screen,             ║');
+  console.log('║  OR enter the 6-digit OTP in the terminal below.          ║');
+  console.log('╚════════════════════════════════════════════════════════════╝\n');
+
+  // Terminal input listener
+  const rl = getRL();
+  rl.question('>> Enter 6-digit OTP (or enter directly in browser): ').then(async (code) => {
+    const cleanCode = (code || '').trim();
+    if (cleanCode && cleanCode.length >= 4) {
+      console.log(`[INFO] Submitting OTP "${cleanCode}" into Instagram form...`);
+      const otpInput = page.locator(otpSelector).first();
+      if (await otpInput.isVisible({ timeout: 2500 }).catch(() => false)) {
+        await otpInput.fill(cleanCode);
+        await page.waitForTimeout(400);
+        const nextBtn = page.locator('button:has-text("Next"), button[type="submit"], div[role="button"]:has-text("Next")').first();
+        if (await nextBtn.isVisible({ timeout: 2000 }).catch(() => false)) {
+          await nextBtn.click({ force: true });
+        }
+      }
+    }
+  }).catch(() => { });
+
+  // Polling loop: checks if user completed OTP and reached Instagram feed
+  for (let w = 0; w < 180; w++) {
+    await dismissAllPopups(page, 1);
+
+    const currentUrl = page.url();
+    const isPastSignup =
+      !currentUrl.includes('emailsignup') ||
+      currentUrl === 'https://www.instagram.com/' ||
+      currentUrl.includes('instagram.com/?') ||
+      (await page.locator('text="Turn on Notifications"').isVisible().catch(() => false)) ||
+      (await page.locator('svg[aria-label="Home"], svg[aria-label="ホーム"]').isVisible().catch(() => false));
+
+    if (isPastSignup) {
+      console.log('✅ [SUCCESS] OTP verified and logged into Instagram!');
+      return true;
+    }
+
+    if (await checkAndHandleSuspendedCheckpoint(page)) {
+      return false;
+    }
+
+    await page.waitForTimeout(1000);
+  }
+  return false;
+}
+
 // ==========================================
-// BIO UPDATE + PROFILE PHOTO
+// STEP 2: PROFILE PHOTO & BIO
 // ==========================================
 async function addBioToProfile(page, bioText, username) {
   console.log('\n==============================================');
-  console.log('📝 [BIO UPDATE] Setting Bio & Profile Photo...');
+  console.log('📝 [STEP 2] Setting Bio & Profile Photo...');
   console.log(`📝 [BIO TEXT] "${bioText}"`);
   console.log('==============================================');
 
   try {
-    // 1. Dismiss any popups on screen first
     await dismissAllPopups(page);
 
-    // 2. Navigate to the edit profile page
     console.log('[INFO] Navigating to Edit Profile page...');
-    await page.goto('https://www.instagram.com/accounts/edit/', {
-      waitUntil: 'domcontentloaded',
-      timeout: 30000,
-    });
+    await page.goto(CONFIG.editProfileUrl, { waitUntil: 'domcontentloaded', timeout: 30000 });
     await page.waitForTimeout(3000);
     await dismissAllPopups(page);
 
-    // If redirected away from edit profile, try user profile -> Edit profile button
-    if (!page.url().includes('edit')) {
-      console.log(`[INFO] Current URL: ${page.url()}. Trying profile page: https://www.instagram.com/${username}/`);
+    if (!page.url().includes('edit') && username) {
+      console.log(`[INFO] Navigating to profile: https://www.instagram.com/${username}/`);
       await page.goto(`https://www.instagram.com/${username}/`, { waitUntil: 'domcontentloaded' });
-      await page.waitForTimeout(3000);
+      await page.waitForTimeout(2500);
       await dismissAllPopups(page);
 
       const editBtn = page.locator(
-        'a:has-text("Edit Profile"), a:has-text("Edit profile"), ' +
-        'button:has-text("Edit Profile"), button:has-text("Edit profile"), ' +
-        'a:has-text("プロフィールを編集"), button:has-text("プロフィールを編集"), ' +
-        'div[role="button"]:has-text("Edit Profile"), div[role="button"]:has-text("プロフィールを編集")'
+        'a:has-text("Edit Profile"), a:has-text("Edit profile"), button:has-text("Edit Profile"), button:has-text("Edit profile"), a:has-text("プロフィールを編集")'
       ).first();
-      if (await editBtn.isVisible({ timeout: 6000 }).catch(() => false)) {
+      if (await editBtn.isVisible({ timeout: 5000 }).catch(() => false)) {
         await editBtn.click();
         await page.waitForTimeout(3000);
         await dismissAllPopups(page);
       }
     }
 
-    // 3. Upload Profile Photo
-    const profilePicPath = CONFIG.profilePhoto;
-    if (fs.existsSync(profilePicPath)) {
-      console.log('[INFO] Attempting to upload Profile Photo...');
+    // 1. Upload Profile Photo
+    if (fs.existsSync(CONFIG.profilePhoto)) {
+      console.log(`[INFO] Uploading Profile Photo from ${path.basename(CONFIG.profilePhoto)}...`);
       try {
         const fileInput = page.locator('input[type="file"]').first();
         if (await fileInput.count() > 0) {
-          await fileInput.setInputFiles(profilePicPath);
+          await fileInput.setInputFiles(CONFIG.profilePhoto);
           await page.waitForTimeout(3000);
           console.log('✅ [SUCCESS] Profile photo uploaded via file input.');
         } else {
           const changeBtn = page.locator(
-            'text="Change profile photo", text="Change Profile Photo", ' +
-            'button:has-text("Change photo"), button:has-text("プロフィール写真を変更"), ' +
-            'text="プロフィール写真を変更"'
+            'text="Change profile photo", text="Change Profile Photo", button:has-text("Change photo"), button:has-text("プロフィール写真を変更")'
           ).first();
           if (await changeBtn.isVisible({ timeout: 3000 }).catch(() => false)) {
             const [fileChooser] = await Promise.all([
-              page.waitForEvent('filechooser', { timeout: 5000 }).catch(() => null),
-              changeBtn.click()
+              page.waitForEvent('filechooser', { timeout: 6000 }).catch(() => null),
+              changeBtn.click(),
             ]);
             if (fileChooser) {
-              await fileChooser.setFiles(profilePicPath);
-              await page.waitForTimeout(4000);
+              await fileChooser.setFiles(CONFIG.profilePhoto);
+              await page.waitForTimeout(3500);
               console.log('✅ [SUCCESS] Profile photo uploaded via file chooser.');
             }
           }
         }
       } catch (err) {
-        console.error('⚠️ [WARN] Could not upload profile photo:', err.message);
+        console.log(`⚠️ [WARN] Could not upload profile photo: ${err.message}`);
       }
     }
 
-    // 4. Locate Bio textarea (wait up to 20 seconds)
-    console.log('[INFO] Looking for Bio textarea...');
+    // 2. Locate Bio textarea
+    console.log('[INFO] Locating Bio textarea...');
     const bioTextarea = page.locator(
-      'textarea#pepBio, textarea[id*="bio" i], textarea[aria-label*="Bio" i], ' +
-      'textarea[aria-label*="自己紹介" i], textarea[placeholder*="Bio" i], ' +
-      'textarea[placeholder*="自己紹介" i], textarea'
+      'textarea#pepBio, textarea[id*="bio" i], textarea[aria-label*="Bio" i], textarea[aria-label*="自己紹介" i], textarea[placeholder*="Bio" i], textarea'
     ).first();
 
-    try {
-      await bioTextarea.waitFor({ state: 'visible', timeout: 20000 });
-      console.log('  ✅ Found Bio textarea!');
-    } catch {
-      console.error('❌ [ERROR] Bio textarea not found! Taking debug screenshot...');
-      await debugScreenshot(page, 'bio_textarea_not_found');
-      return;
-    }
-
-    // 5. Clear and fill the bio
-    console.log('[INFO] Clearing and filling bio text...');
+    await bioTextarea.waitFor({ state: 'visible', timeout: 15000 });
     await bioTextarea.scrollIntoViewIfNeeded().catch(() => { });
     await bioTextarea.click();
     await bioTextarea.focus();
 
-    await page.keyboard.press('Control+A');
-    await page.waitForTimeout(200);
+    const isMac = process.platform === 'darwin';
+    await page.keyboard.press(isMac ? 'Meta+A' : 'Control+A');
+    await page.waitForTimeout(150);
     await page.keyboard.press('Backspace');
-    await page.waitForTimeout(300);
+    await page.waitForTimeout(200);
 
-    // Method 1: Use execCommand to insert text (triggers React state)
-    await bioTextarea.evaluate((el, text) => {
-      el.focus();
-      el.value = '';
-      document.execCommand('selectAll', false, null);
-      document.execCommand('insertText', false, text);
-      el.dispatchEvent(new Event('input', { bubbles: true }));
-      el.dispatchEvent(new Event('change', { bubbles: true }));
-    }, bioText);
+    // Insert multiline text without truncation
+    await page.keyboard.insertText(bioText);
+    await page.waitForTimeout(400);
 
-    await page.waitForTimeout(500);
-
-    // Fallback if execCommand was prevented
-    const checkVal = await bioTextarea.inputValue().catch(() => '');
-    if (!checkVal || checkVal.trim() === '') {
-      console.log('[INFO] execCommand did not set value, using .fill()...');
+    const val = await bioTextarea.inputValue().catch(() => '');
+    if (!val || val.trim() === '') {
       await bioTextarea.fill(bioText);
-      await page.waitForTimeout(500);
+      await page.waitForTimeout(300);
     }
 
-    const finalVal = await bioTextarea.inputValue().catch(() => '');
-    console.log(`[INFO] Bio textarea value: "${finalVal.substring(0, 50)}..."`);
-
-    // 6. Click Submit / Save button
+    // 3. Click Submit / Save button
     console.log('[INFO] Clicking Submit/Save button...');
     const saveBtn = page.locator(
-      'button[type="submit"], ' +
-      'div[role="button"]:has-text("Submit"), button:has-text("Submit"), ' +
-      'div[role="button"]:has-text("Save"), button:has-text("Save"), ' +
-      'div[role="button"]:has-text("送信"), button:has-text("送信"), ' +
-      'div[role="button"]:has-text("保存"), button:has-text("保存")'
+      'button[type="submit"], div[role="button"]:has-text("Submit"), button:has-text("Submit"), div[role="button"]:has-text("Save"), button:has-text("Save"), div[role="button"]:has-text("送信"), button:has-text("送信"), div[role="button"]:has-text("保存"), button:has-text("保存")'
     ).first();
 
     await saveBtn.scrollIntoViewIfNeeded().catch(() => { });
@@ -556,11 +548,7 @@ async function addBioToProfile(page, bioText, username) {
       await saveBtn.click({ force: true });
       await page.waitForTimeout(3500);
       console.log('🎉 [SUCCESS] Bio updated and saved!');
-    } else {
-      console.log('⚠️ [NOTE] Save button not found. Checking if auto-saved...');
-      await debugScreenshot(page, 'save_btn_not_found');
     }
-
   } catch (error) {
     console.error('❌ [ERROR updating bio]:', error.message);
     await debugScreenshot(page, 'bio_update_error');
@@ -568,32 +556,34 @@ async function addBioToProfile(page, bioText, username) {
 }
 
 // ==========================================
-// SINGLE REEL UPLOAD (on one page/tab)
+// STEP 3: FAST NON-BLOCKING REEL UPLOAD
 // ==========================================
-async function uploadSingleReelOnPage(page, reelNum, caption, tabIndex) {
+
+/**
+ * Uploads a single reel on the provided page up to clicking Share.
+ * DOES NOT wait for upload completion — returns immediately after Share is triggered
+ * so the tab can continue uploading in the background while the next tab starts!
+ */
+async function uploadSingleReelFast(page, reelNum, caption, tabIndex) {
   const videoPath = path.join(
     CONFIG.reelsFolder,
     `${CONFIG.reelPrefix}${reelNum}${CONFIG.reelExtension}`
   );
 
   if (!fs.existsSync(videoPath)) {
-    throw new Error(`Video not found: ${videoPath}`);
+    throw new Error(`Video file not found: ${videoPath}`);
   }
 
   const log = (msg) => {
     const text = `  [TAB ${String(tabIndex).padStart(2, '0')}] ${msg}`;
-    console.log(text);
-    try {
-      fs.appendFileSync(path.join(__dirname, 'automation.log'), `[${new Date().toISOString()}] ${text}\n`);
-    } catch { }
+    logMessage(text);
   };
 
-  log(`▶ Starting upload: R${reelNum}.mp4`);
+  log(`▶ Starting fast upload: R${reelNum}.mp4`);
 
-  // ── 0. Dismiss popups ─────────────────────────────────────────────────────
   await dismissAllPopups(page);
 
-  // ── 1. Click the "Create" / "New post" button in the left sidebar ─────────
+  // 1. Click "Create" in sidebar
   log('Step 1: Clicking Create button...');
   const createBtn = page.locator([
     'svg[aria-label="New post"]',
@@ -602,380 +592,248 @@ async function uploadSingleReelOnPage(page, reelNum, caption, tabIndex) {
     'svg[aria-label="作成"]',
     'a:has(svg[aria-label="New post"])',
     'a:has(svg[aria-label="Create"])',
-    'a:has(svg[aria-label="新規投稿"])',
-    'a:has(svg[aria-label="作成"])',
     'span:text-is("Create")',
     'span:text-is("作成")',
     'div[role="button"]:has-text("Create")',
     'div[role="button"]:has-text("作成")',
   ].join(', ')).first();
 
-  if (!await createBtn.isVisible({ timeout: 4000 }).catch(() => false)) {
-    log('  Create button not immediately visible — clearing any popups...');
-    await dismissAllPopups(page);
-  }
-
-  await createBtn.waitFor({ state: 'visible', timeout: 20000 });
+  await createBtn.waitFor({ state: 'visible', timeout: 18000 });
   await createBtn.click({ force: true });
-  await page.waitForTimeout(2500);
-
-  // ── 2. If a dropdown menu appears, choose "Post" / "投稿" ────────────────
-  log('Step 2: Checking for dropdown menu...');
-  const postItem = page.locator(
-    '[role="menuitem"]:has-text("Post"), [role="menuitem"]:has-text("投稿"), ' +
-    'a:has-text("Post"), a:has-text("投稿"), ' +
-    'span:text-is("Post"), span:text-is("投稿"), ' +
-    'div[role="button"]:has-text("Post"), div[role="button"]:has-text("投稿")'
-  ).first();
-  if (await postItem.isVisible({ timeout: 2000 }).catch(() => false)) {
-    log('  Selecting "Post" from menu...');
-    const clickedViaDom = await postItem.evaluate((el) => {
-      el.click();
-      return true;
-    }).catch(() => false);
-    if (!clickedViaDom) {
-      await postItem.click({ force: true }).catch(() => { });
-    }
-    await page.waitForTimeout(2000);
-  }
-
-  // ── 3. Wait for dialog modal & inject the video file ─────────────────────
-  log('Step 3: Waiting for upload dialog...');
-  const dialog = page.locator('div[role="dialog"]').first();
-  await dialog.waitFor({ state: 'visible', timeout: 30000 });
   await page.waitForTimeout(2000);
 
-  const fileSize = fs.existsSync(videoPath) ? fs.statSync(videoPath).size : 0;
-  log(`  Setting video file: R${reelNum}.mp4 (${fileSize} bytes)`);
-  let videoUploaded = false;
-
-  // Helper to verify if the video has loaded into Instagram
-  const checkVideoLoaded = async () => {
-    return await page.evaluate(() => {
-      const dlg = document.querySelector('div[role="dialog"]');
-      if (!dlg) return false;
-      if (dlg.querySelector('video')) return true;
-      const text = (dlg.innerText || '').toLowerCase();
-      const promptPresent = text.includes('drag photos') || text.includes('select from computer') || text.includes('ドラッグ');
-      const hasNext = Array.from(dlg.querySelectorAll('button, [role="button"]')).some(b => {
-        const t = (b.innerText || '').trim().toLowerCase();
-        return t === 'next' || t === '次へ' || t === 'ok' || t === '了解';
-      });
-      return (!promptPresent && hasNext) || text.includes('shared as reels') || text.includes('リールとしてシェア');
-    }).catch(() => false);
-  };
-
-  // ── PRIMARY: Intercept filechooser by clicking "Select from computer" ──
-  try {
-    log('  Attempting filechooser click on "Select from computer"...');
-    const selectBtn = page.getByRole('button', { name: /Select from computer|コンピューターから選択/i })
-      .or(page.locator('div[role="dialog"] button:has-text("Select from computer")'))
-      .or(page.locator('div[role="dialog"] [role="button"]:has-text("Select from computer")'))
-      .or(page.getByText('Select from computer', { exact: true }))
-      .first();
-
-    await selectBtn.waitFor({ state: 'visible', timeout: 8000 });
-
-    const [fileChooser] = await Promise.all([
-      page.waitForEvent('filechooser', { timeout: 10000 }),
-      selectBtn.click({ force: true, delay: 100 }),
-    ]);
-
-    log('  ✅ filechooser event intercepted! Passing video file...');
-    await fileChooser.setFiles(videoPath);
-    log('  File passed to filechooser. Waiting 4s for processing...');
-    await page.waitForTimeout(4000);
-
-    if (await checkVideoLoaded()) {
-      log('  ✅ Video loaded successfully via filechooser!');
-      videoUploaded = true;
-    }
-  } catch (err) {
-    log(`  Notice (filechooser attempt): ${err.message}`);
-  }
-
-  // ── FALLBACK 1: Set file directly on file input ──
-  if (!videoUploaded) {
-    try {
-      log('  Fallback 1: Setting files on page input[type="file"]...');
-      const inputs = page.locator('input[type="file"]');
-      const count = await inputs.count();
-      log(`  Found ${count} input[type="file"] elements.`);
-      if (count > 0) {
-        await inputs.last().setInputFiles(videoPath);
-        await page.waitForTimeout(4000);
-        if (await checkVideoLoaded()) {
-          log('  ✅ Video loaded successfully via inputs.last()!');
-          videoUploaded = true;
-        }
-      }
-    } catch (err) {
-      log(`  Notice (direct input attempt): ${err.message}`);
-    }
-  }
-
-  // ── FALLBACK 2: Playwright native drop target on dialog ──
-  if (!videoUploaded) {
-    try {
-      log('  Fallback 2: Using Playwright setInputFiles on dialog drop zone...');
-      await page.locator('div[role="dialog"]').first().setInputFiles(videoPath);
-      await page.waitForTimeout(4000);
-      if (await checkVideoLoaded()) {
-        log('  ✅ Video loaded successfully via dialog setInputFiles drop target!');
-        videoUploaded = true;
-      }
-    } catch (err) {
-      log(`  Notice (dialog drop attempt): ${err.message}`);
-    }
-  }
-
-  // ── Extended wait: Video decoding by Instagram ──
-  log('  Waiting for video to finish loading & decoding (up to 30s)...');
-  for (let w = 0; w < 30; w++) {
-    if (await checkVideoLoaded()) {
-      videoUploaded = true;
-      log(`  ✅ Video preview is ready! (detected at ${w + 1}s)`);
-      break;
-    }
-    const okBtn = page.locator('div[role="dialog"]').locator(
-      'button:has-text("OK"), button:has-text("了解")'
-    ).first();
-    if (await okBtn.isVisible().catch(() => false)) {
-      log('  Reels info OK button detected during wait — clicking OK!');
-      await okBtn.click({ force: true }).catch(() => { });
-      videoUploaded = true;
-      break;
-    }
-    await page.waitForTimeout(1000);
-  }
-
-  if (!videoUploaded) {
-    const modalHtml = await page.evaluate(() => {
-      const d = document.querySelector('div[role="dialog"]');
-      return d ? d.innerHTML.substring(0, 500) : 'NO_DIALOG';
-    }).catch(() => 'ERROR');
-    log(`  [DEBUG MODAL HTML]: ${modalHtml}`);
-    await debugScreenshot(page, `tab${tabIndex}_upload_failed_final`);
-    throw new Error(`[TAB ${tabIndex}] Could not load video R${reelNum}.mp4 into Instagram dialog.`);
-  }
-
-  // ── 4. "Video posts are now shared as reels" → click OK ───────────────────
-  log('Step 4: Checking for "shared as reels" info dialog...');
-  const okBtn = page.locator('div[role="dialog"]').locator(
-    'button:has-text("OK"), button:has-text("了解"), button:text-is("OK")'
+  // 2. Select "Post" from dropdown if visible
+  const postItem = page.locator(
+    '[role="menuitem"]:has-text("Post"), [role="menuitem"]:has-text("投稿"), a:has-text("Post"), span:text-is("Post")'
   ).first();
-  if (await okBtn.isVisible().catch(() => false)) {
-    log('  Clicking OK on info dialog...');
-    await okBtn.click({ force: true });
+  if (await postItem.isVisible({ timeout: 2000 }).catch(() => false)) {
+    log('Step 2: Selecting "Post" from dropdown...');
+    await postItem.evaluate((el) => el.click()).catch(() => postItem.click({ force: true }));
+    await page.waitForTimeout(2000);
+  }
+
+  // 3. Attach Video file
+  log(`Step 3: Attaching video R${reelNum}.mp4...`);
+  const dialog = page.locator('div[role="dialog"]').first();
+  await dialog.waitFor({ state: 'visible', timeout: 25000 });
+  await page.waitForTimeout(1500);
+
+  let videoAttached = false;
+  const selectBtn = page.locator('div[role="dialog"]').locator([
+    'button:has-text("Select from computer")',
+    'button:has-text("Select From Computer")',
+    'button:has-text("コンピューターから選択")',
+    '[role="button"]:has-text("Select from computer")',
+  ].join(', ')).first();
+
+  if (await selectBtn.isVisible({ timeout: 6000 }).catch(() => false)) {
+    try {
+      const [fileChooser] = await Promise.all([
+        page.waitForEvent('filechooser', { timeout: 8000 }),
+        selectBtn.click({ force: true }),
+      ]);
+      await fileChooser.setFiles(videoPath);
+      videoAttached = true;
+      log('  ✅ Video attached via file chooser!');
+    } catch { }
+  }
+
+  if (!videoAttached) {
+    const inputs = page.locator('input[type="file"]');
+    if (await inputs.count() > 0) {
+      await inputs.last().setInputFiles(videoPath);
+      videoAttached = true;
+      log('  ✅ Video attached via file input!');
+    }
+  }
+
+  // Fast check: Dismiss reels info OK prompt if present (NO long wait/play for video preview!)
+  log('  Dismissing any reels info prompts or checking Next button...');
+  for (let c = 0; c < 4; c++) {
+    const okBtn = page.locator('div[role="dialog"]').locator(
+      'button:has-text("OK"), button:has-text("了解"), button:text-is("OK")'
+    ).first();
+    if (await okBtn.isVisible({ timeout: 500 }).catch(() => false)) {
+      log('  Dismissed "shared as reels" info dialog.');
+      await okBtn.click({ force: true }).catch(() => { });
+      await page.waitForTimeout(800);
+      break;
+    }
+    const hasNext = await page.locator('div[role="dialog"]').locator(
+      'button:has-text("Next"), div[role="button"]:has-text("Next"), button:has-text("次へ")'
+    ).first().isVisible({ timeout: 500 }).catch(() => false);
+    if (hasNext) break;
+    await page.waitForTimeout(500);
+  }
+
+  // 4. Advance past crop to Edit screen (if currently on Crop)
+  const isCropScreen = await page.evaluate(() => {
+    const dlg = document.querySelector('div[role="dialog"]');
+    if (!dlg) return false;
+    const text = (dlg.innerText || '').toLowerCase();
+    return !text.includes('cover photo') && !text.includes('select from computer') && !text.includes('カバー写真');
+  }).catch(() => false);
+
+  if (isCropScreen) {
+    log('Step 4: On Crop screen — Clicking Next to reach Edit screen...');
+    await clickNextInModal(page, log);
     await page.waitForTimeout(2000);
   } else {
-    await page.evaluate(() => {
-      const btns = Array.from(document.querySelectorAll('div[role="dialog"] button, div[role="dialog"] [role="button"]'));
-      const ok = btns.find(b => (b.innerText || '').trim().toUpperCase() === 'OK' || (b.innerText || '').includes('了解'));
-      if (ok) ok.click();
-    }).catch(() => { });
+    log('Step 4: Already on Edit screen.');
   }
 
-  // ── 5. Crop step: set 9:16 if visible ─────────────────────────────────────
-  log('Step 5: Checking for crop options...');
-  try {
-    const cropBtn = page.locator('div[role="dialog"]').locator(
-      'svg[aria-label="Select crop"], svg[aria-label="切り抜きを選択"], ' +
-      'button:has(svg[aria-label*="crop" i]), button:has(svg[aria-label*="切り抜き"])'
-    ).first();
-    if (await cropBtn.isVisible({ timeout: 3000 }).catch(() => false)) {
-      await cropBtn.click();
-      await page.waitForTimeout(800);
-      const ratio916 = page.locator('span:text-is("9:16"), div:text-is("9:16"), [role="button"]:has-text("9:16")').first();
-      if (await ratio916.isVisible({ timeout: 2000 }).catch(() => false)) {
-        await ratio916.click();
-        await page.waitForTimeout(1000);
-        log('  9:16 crop set.');
-      }
-    }
-  } catch { }
+  // Wait for Edit screen (Cover photo section) to render
+  for (let w = 0; w < 6; w++) {
+    const hasEdit = await page.evaluate(() => {
+      const dlg = document.querySelector('div[role="dialog"]');
+      if (!dlg) return false;
+      const text = (dlg.innerText || '').toLowerCase();
+      return text.includes('cover photo') || text.includes('select from computer') || text.includes('カバー写真');
+    }).catch(() => false);
+    if (hasEdit) break;
+    await page.waitForTimeout(600);
+  }
 
-  // ── 6. Click "Next" to advance past crop/trim step ────────────────────────
-  log('Step 6: Clicking Next (past crop)...');
-  await clickNextInDialog(page, log);
-
-  // ── 7. Edit step: upload cover/thumbnail ──────────────────────────────────
-  log(`Step 7: Setting cover photo from ${CONFIG.coverPhoto}...`);
+  // 5. Upload Cover Photo from Reels/Cover.jpg
+  log(`Step 5: Attaching cover photo from ${path.basename(CONFIG.coverPhoto)}...`);
   if (fs.existsSync(CONFIG.coverPhoto)) {
+    let coverAttached = false;
+
+    // Method A: Check for image-specific file input inside dialog
     try {
-      // 1. Direct check for "Select From Computer" button (standard Instagram Edit modal layout)
-      const selectCover = page.locator('div[role="dialog"]').locator([
-        'button:has-text("Select From Computer")',
-        'button:has-text("Select from computer")',
-        '[role="button"]:has-text("Select From Computer")',
-        '[role="button"]:has-text("Select from computer")',
-        'div[role="button"]:has-text("Select From Computer")',
-        'button:has-text("コンピューターから選択")',
-        '[role="button"]:has-text("コンピューターから選択")',
-        'span:text-is("Select From Computer")',
-        'button:has-text("Select from")',
-      ].join(', ')).first();
-
-      let selectCoverVisible = await selectCover.isVisible({ timeout: 2500 }).catch(() => false);
-
-      // 2. If not directly visible, check if a Cover tab must be clicked
-      if (!selectCoverVisible) {
-        const coverTab = page.locator('div[role="dialog"]').locator(
-          'div[role="tab"]:has-text("Cover photo"), div[role="tab"]:has-text("Cover"), ' +
-          'button:has-text("Cover photo"), button:has-text("Cover"), ' +
-          'span:has-text("Cover photo"), span:text-is("Cover"), ' +
-          'div[role="tab"]:has-text("カバー写真"), div[role="tab"]:has-text("カバー")'
-        ).first();
-
-        if (await coverTab.isVisible({ timeout: 2000 }).catch(() => false)) {
-          log('  Clicking Cover photo tab...');
-          await coverTab.click({ force: true });
-          await page.waitForTimeout(1500);
-          selectCoverVisible = await selectCover.isVisible({ timeout: 2000 }).catch(() => false);
-        }
-      }
-
-      if (selectCoverVisible) {
-        log('  Clicking "Select From Computer" for Cover.jpg...');
-        const [coverFc] = await Promise.all([
-          page.waitForEvent('filechooser', { timeout: 10000 }),
-          selectCover.click({ force: true }),
-        ]);
-        await coverFc.setFiles(CONFIG.coverPhoto);
-        log('  ✅ Cover photo uploaded via file chooser!');
-        await page.waitForTimeout(3000);
-      } else {
-        const dialogInputs = page.locator('div[role="dialog"] input[type="file"], input[type="file"]');
-        if (await dialogInputs.count() > 0) {
-          await dialogInputs.last().setInputFiles(CONFIG.coverPhoto);
-          log('  ✅ Cover photo uploaded via dialog file input!');
-          await page.waitForTimeout(3000);
-        } else {
-          log('  ⚠️ "Select From Computer" button not found.');
-        }
+      const imgInput = page.locator('div[role="dialog"] input[type="file"][accept*="image"], input[type="file"][accept*="image"]').last();
+      if (await imgInput.count() > 0) {
+        log('  Found image file input in dialog — setting Cover.jpg directly...');
+        await imgInput.setInputFiles(CONFIG.coverPhoto);
+        coverAttached = true;
+        log('  ✅ Cover photo attached via image file input!');
+        await page.waitForTimeout(2500);
       }
     } catch (e) {
-      log(`  Cover photo notice: ${e.message}`);
+      log(`  Image input attempt notice: ${e.message}`);
+    }
+
+    // Method B: Click visible "Select From Computer" button with filechooser
+    if (!coverAttached) {
+      try {
+        const selectCoverBtn = page.locator('div[role="dialog"]').locator([
+          'button:has-text("Select From Computer")',
+          'button:has-text("Select from computer")',
+          '[role="button"]:has-text("Select From Computer")',
+          '[role="button"]:has-text("Select from computer")',
+          'div[role="button"]:has-text("Select From Computer")',
+          'span:text-is("Select From Computer")',
+          'button:has-text("コンピューターから選択")',
+        ].join(', ')).first();
+
+        if (await selectCoverBtn.isVisible({ timeout: 3000 }).catch(() => false)) {
+          log('  Clicking visible "Select From Computer" button for Cover.jpg...');
+          const [coverFc] = await Promise.all([
+            page.waitForEvent('filechooser', { timeout: 6000 }),
+            selectCoverBtn.click({ force: true }),
+          ]);
+          await coverFc.setFiles(CONFIG.coverPhoto);
+          coverAttached = true;
+          log('  ✅ Cover photo attached via file chooser!');
+          await page.waitForTimeout(2500);
+        }
+      } catch (e) {
+        log(`  Button filechooser attempt notice: ${e.message}`);
+      }
+    }
+
+    // Method C: Last file input in dialog fallback
+    if (!coverAttached) {
+      try {
+        const anyInputs = page.locator('div[role="dialog"] input[type="file"], input[type="file"]');
+        if (await anyInputs.count() > 0) {
+          log('  Setting Cover.jpg on last dialog input[type="file"]...');
+          await anyInputs.last().setInputFiles(CONFIG.coverPhoto);
+          coverAttached = true;
+          log('  ✅ Cover photo attached via last dialog input!');
+          await page.waitForTimeout(2500);
+        }
+      } catch (e) {
+        log(`  Last file input fallback notice: ${e.message}`);
+      }
+    }
+
+    if (!coverAttached) {
+      log('  ⚠️ Cover photo could not be attached; will proceed with default video frame.');
     }
   } else {
     log(`  ⚠️ Cover photo file not found at: ${CONFIG.coverPhoto}`);
   }
 
-  // ── 8. Click "Next" to advance past edit/cover step ───────────────────────
-log('Step 8: Clicking Next (past edit)...');
-await clickNextInDialog(page, log);
+  // 6. Advance past Edit screen to Caption screen (Click Next)
+  log('Step 6: Clicking Next (past Edit screen to Caption screen)...');
+  await clickNextInModal(page, log);
+  await page.waitForTimeout(2000);
 
-// ── 9. Caption step: fill in caption text ─────────────────────────────────
-log('Step 9: Filling caption...');
-const captionBox = page.locator('div[role="dialog"]').locator(
-  'div[role="textbox"][aria-label*="caption" i], ' +
-  'div[role="textbox"][aria-label*="キャプション" i], ' +
-  'div[aria-label*="caption" i][contenteditable="true"], ' +
-  'div[aria-label*="キャプション" i][contenteditable="true"], ' +
-  'div[contenteditable="true"]'
-).first();
-
-await captionBox.waitFor({ state: 'visible', timeout: 15000 });
-await captionBox.click();
-await captionBox.focus();
-await page.waitForTimeout(300);
-
-const isMac = process.platform === 'darwin';
-await page.keyboard.press(isMac ? 'Meta+A' : 'Control+A');
-await page.keyboard.press('Backspace');
-await page.waitForTimeout(200);
-
-// Playwright insertText preserves multiline text and hashtags cleanly
-await page.keyboard.insertText(caption);
-await page.waitForTimeout(600);
-
-// Dismiss any hashtag autocomplete that may block the Share button
-await page.keyboard.press('Escape').catch(() => { });
-await page.waitForTimeout(500);
-
-// ── 10. Click Share ───────────────────────────────────────────────────────
-log('Step 10: Clicking header "Share" button...');
-let shareClicked = await page.evaluate(() => {
-  const dialogs = document.querySelectorAll('div[role="dialog"]');
-  for (const dlg of dialogs) {
-    const candidates = dlg.querySelectorAll('button, div[role="button"], span[role="button"]');
-    for (const c of candidates) {
-      const text = (c.innerText || c.textContent || '').trim();
-      if (text === 'Share' || text === 'シェア') {
-        c.click();
-        return text;
-      }
-    }
-  }
-  return null;
-}).catch(() => null);
-
-if (!shareClicked) {
-  const shareBtn = page.locator('div[role="dialog"]').locator([
-    'button:text-is("Share")',
-    'div[role="button"]:text-is("Share")',
-    'span[role="button"]:text-is("Share")',
-    'button:text-is("シェア")',
-    'div[role="button"]:text-is("シェア")',
-    'button:has-text("Share")',
+  // 7. Caption insertion
+  log('Step 7: Inserting caption and hashtags...');
+  const captionBox = page.locator('div[role="dialog"]').locator([
+    'div[role="textbox"][aria-label*="caption" i]',
+    'div[role="textbox"][aria-label*="キャプション" i]',
+    'div[contenteditable="true"]',
   ].join(', ')).first();
-  await shareBtn.waitFor({ state: 'visible', timeout: 10000 });
-  await shareBtn.click({ force: true });
-  shareClicked = 'Share';
-}
 
-log(`✅ Share clicked ("${shareClicked}"). Awaiting Instagram upload completion...`);
+  await captionBox.waitFor({ state: 'visible', timeout: 15000 });
+  await captionBox.click();
+  await captionBox.focus();
 
-// Wait actively for upload completion
-for (let sec = 0; sec < 45; sec++) {
-  const dialogCount = await page.locator('div[role="dialog"]').count().catch(() => 0);
-  if (dialogCount === 0) {
-    log('  Upload confirmed: Dialog closed.');
-    break;
-  }
+  const isMac = process.platform === 'darwin';
+  await page.keyboard.press(isMac ? 'Meta+A' : 'Control+A');
+  await page.keyboard.press('Backspace');
+  await page.waitForTimeout(150);
 
-  const hasShared = await page.evaluate(() => {
-    const text = (document.body.innerText || '').toLowerCase();
-    return text.includes('your reel has been shared') ||
-      text.includes('your post has been shared') ||
-      text.includes('リールがシェアされました') ||
-      text.includes('投稿がシェアされました');
-  }).catch(() => false);
+  await page.keyboard.insertText(caption);
+  await page.waitForTimeout(500);
+  await page.keyboard.press('Escape').catch(() => { });
+  await page.waitForTimeout(400);
 
-  if (hasShared) {
-    log('  ✅ Confirmed: "Your reel has been shared."');
-    const closeBtn = page.locator('div[role="dialog"]').locator(
-      'svg[aria-label="Close"], svg[aria-label="閉じる"], button:has-text("Close"), button:has-text("閉じる")'
-    ).first();
-    if (await closeBtn.isVisible({ timeout: 2000 }).catch(() => false)) {
-      await closeBtn.click({ force: true }).catch(() => { });
-    }
-    break;
-  }
-
-  if (sec === 4 || sec === 10) {
-    await page.evaluate(() => {
-      const dlg = document.querySelector('div[role="dialog"]');
-      if (dlg) {
-        const btn = Array.from(dlg.querySelectorAll('button, div[role="button"]')).find(b => {
-          const t = (b.innerText || '').trim();
-          return t === 'Share' || t === 'シェア';
-        });
-        if (btn) btn.click();
+  // 8. Click header Share button
+  log('Step 8: Clicking header "Share" button...');
+  let shareClicked = await page.evaluate(() => {
+    const dialogs = document.querySelectorAll('div[role="dialog"]');
+    for (const dlg of dialogs) {
+      const candidates = dlg.querySelectorAll('button, div[role="button"], span[role="button"]');
+      for (const c of candidates) {
+        const text = (c.innerText || c.textContent || '').trim();
+        if (text === 'Share' || text === 'シェア') {
+          c.click();
+          return text;
+        }
       }
-    }).catch(() => { });
+    }
+    return null;
+  }).catch(() => null);
+
+  if (!shareClicked) {
+    const shareBtn = page.locator('div[role="dialog"]').locator([
+      'button:text-is("Share")',
+      'div[role="button"]:text-is("Share")',
+      'button:text-is("シェア")',
+      'button:has-text("Share")',
+    ].join(', ')).first();
+    await shareBtn.waitFor({ state: 'visible', timeout: 8000 });
+    await shareBtn.click({ force: true });
+    shareClicked = 'Share';
   }
 
-  await page.waitForTimeout(1000);
-}
+  log(`✅ Share clicked ("${shareClicked}"). Upload initiated!`);
+
+  // Wait 2.5s to allow upload network request to dispatch and upload spinner to appear
+  await page.waitForTimeout(2500);
+
+  log(`🚀 Tab ${tabIndex}: Reel R${reelNum}.mp4 is actively uploading in background. Leaving tab open & moving to next reel immediately!`);
+  return true;
 }
 
 /**
- * Helper: Clicks "Next" / "次へ" inside the dialog.
- * Scoped to div[role="dialog"] header first, then broader.
+ * Clicks "Next" / "次へ" in the Instagram modal
  */
-async function clickNextInDialog(page, log) {
-  // 1. Direct evaluate inside dialog (fast and reliable)
+async function clickNextInModal(page, log) {
   const clicked = await page.evaluate(() => {
     const dialogs = document.querySelectorAll('div[role="dialog"]');
     for (const dlg of dialogs) {
@@ -992,34 +850,152 @@ async function clickNextInDialog(page, log) {
   }).catch(() => null);
 
   if (clicked) {
-    log(`  ✅ Next clicked ("${clicked}") via DOM`);
-    await page.waitForTimeout(2500);
+    await page.waitForTimeout(2200);
     return;
   }
 
-  // 2. Playwright locator fallback
-  const nextBtn = page.locator('div[role="dialog"]').locator(
-    'button:has-text("Next"), div[role="button"]:has-text("Next"), ' +
-    'button:has-text("次へ"), div[role="button"]:has-text("次へ")'
-  ).first();
-
-  await nextBtn.waitFor({ state: 'visible', timeout: 15000 });
+  const nextBtn = page.locator('div[role="dialog"]').locator([
+    'button:has-text("Next")',
+    'button:has-text("次へ")',
+    'div[role="button"]:has-text("Next")',
+  ].join(', ')).first();
+  await nextBtn.waitFor({ state: 'visible', timeout: 12000 });
   await nextBtn.click({ force: true });
-  await page.waitForTimeout(2500);
-  log('  ✅ Next clicked via locator');
+  await page.waitForTimeout(2200);
 }
 
 // ==========================================
-// PIPELINE: Upload 20 Reels Sequentially
+// STEP 4: VERIFICATION POP-UP (Done / Not Done)
 // ==========================================
+
+/**
+ * Injects a verification popup in the browser and prompts in the terminal concurrently.
+ * Keeps all tabs open until the user clicks "Done".
+ * If "Not Done", allows user to inspect and re-prompts.
+ */
+async function promptDoneOrNotDone(pages) {
+  const activePage = pages[pages.length - 1] || pages[0];
+
+  while (true) {
+    console.log('\n╔══════════════════════════════════════════════════════════════════════════╗');
+    console.log('║                   🎬 20 REELS DISPATCHED: VERIFICATION                   ║');
+    console.log('╠══════════════════════════════════════════════════════════════════════════╣');
+    console.log('║  All 20 reels are actively uploading across your open browser tabs.      ║');
+    console.log('║  Please inspect the open tabs or profile to verify upload completion.    ║');
+    console.log('║                                                                          ║');
+    console.log('║  Click [Done] on the browser screen popup OR select below:               ║');
+    console.log('║    [1] ✅ Done (All 20 reels uploaded -> Close tabs, Logout & New Account)║');
+    console.log('║    [2] ⏳ Not Done (Still uploading -> Keep tabs open & wait)             ║');
+    console.log('╚══════════════════════════════════════════════════════════════════════════╝\n');
+
+    // 1. In-browser popup on activePage
+    const browserPopupPromise = activePage.evaluate(() => {
+      return new Promise((resolve) => {
+        const existing = document.getElementById('automation-done-modal');
+        if (existing) existing.remove();
+
+        const modal = document.createElement('div');
+        modal.id = 'automation-done-modal';
+        modal.style.cssText = `
+          position: fixed;
+          top: 24px;
+          right: 24px;
+          z-index: 2147483647;
+          background: #1c1c1e;
+          color: #ffffff;
+          padding: 24px 28px;
+          border-radius: 16px;
+          box-shadow: 0 16px 48px rgba(0, 0, 0, 0.75);
+          border: 2px solid #0095f6;
+          font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+          max-width: 440px;
+          line-height: 1.5;
+        `;
+
+        modal.innerHTML = `
+          <div style="display: flex; align-items: center; gap: 12px; margin-bottom: 12px;">
+            <span style="font-size: 28px;">🎬</span>
+            <div>
+              <h3 style="margin: 0; font-size: 18px; font-weight: 700; color: #fff;">20 Reels Dispatched!</h3>
+              <span style="font-size: 12px; color: #a0a0a0;">Uploading across 20 background tabs</span>
+            </div>
+          </div>
+          <p style="margin: 0 0 18px 0; font-size: 13px; color: #d0d0d0;">
+            Check your open tabs or profile to verify that all reels are uploaded. When finished, click <b>Done</b> to proceed to logout and create the next account.
+          </p>
+          <div style="display: flex; gap: 10px;">
+            <button id="btn-modal-done" style="flex: 1; background: #0095f6; color: white; border: none; padding: 12px 14px; border-radius: 8px; font-size: 14px; font-weight: 700; cursor: pointer; transition: background 0.2s;">
+              ✅ Done (Logout & Next)
+            </button>
+            <button id="btn-modal-not-done" style="flex: 1; background: #2c2c2e; color: #e0e0e0; border: 1px solid #48484a; padding: 12px 14px; border-radius: 8px; font-size: 14px; font-weight: 600; cursor: pointer;">
+              ⏳ Not Done (Wait)
+            </button>
+          </div>
+        `;
+
+        document.body.appendChild(modal);
+
+        document.getElementById('btn-modal-done').onclick = () => {
+          modal.remove();
+          resolve('DONE');
+        };
+
+        document.getElementById('btn-modal-not-done').onclick = () => {
+          modal.remove();
+          resolve('NOT_DONE');
+        };
+      });
+    }).catch(() => null);
+
+    // 2. Terminal input listener
+    const rl = getRL();
+    const terminalPromise = rl.question('>> Select option [1=Done, 2=Not Done] (or click in browser): ').then((ans) => {
+      const a = (ans || '').toLowerCase().trim();
+      if (a === '1' || a === 'done' || a === 'd' || a === 'y' || a === 'yes') return 'DONE';
+      return 'NOT_DONE';
+    });
+
+    const result = await Promise.race([
+      browserPopupPromise.then((res) => (res ? res : new Promise(() => { }))),
+      terminalPromise,
+    ]);
+
+    // Clean up browser modal
+    await activePage.evaluate(() => {
+      const m = document.getElementById('automation-done-modal');
+      if (m) m.remove();
+    }).catch(() => { });
+
+    if (result === 'DONE') {
+      console.log('\n🎉 [CONFIRMED] User verified: All 20 reels are uploaded successfully!');
+      break;
+    } else {
+      console.log('\n⏳ [NOT DONE] Keeping all tabs open for manual inspection.');
+      console.log('   Take your time to check each tab or profile.');
+      console.log('   Re-prompting in 5 seconds...\n');
+      await activePage.waitForTimeout(5000);
+    }
+  }
+
+  // Once confirmed Done, close all upload tabs
+  console.log('[INFO] Closing all 20 upload tabs...');
+  for (let i = 0; i < pages.length; i++) {
+    await pages[i].close().catch(() => { });
+  }
+  console.log('✅ All upload tabs closed.\n');
+}
+
+/**
+ * PIPELINE: Fast Sequential Tab-Spawning for 20 Reels
+ */
 async function uploadAllReelsPipeline(context, caption) {
   const TOTAL = CONFIG.totalReelsToUpload; // 20
   const UNIQUE = CONFIG.numUniqueReels;     // 5
   const seq = Array.from({ length: TOTAL }, (_, i) => (i % UNIQUE) + 1);
 
   console.log('\n════════════════════════════════════════════════════════');
-  console.log(`🎬 PIPELINE UPLOAD — ${TOTAL} reels, 1 tab at a time`);
-  console.log(`📋 Sequence : ${seq.join(' → ')}`);
+  console.log(`🎬 FAST PIPELINE UPLOAD — ${TOTAL} reels across background tabs`);
+  console.log(`📋 Sequence : ${seq.map((n) => `R${n}`).join(' → ')}`);
   console.log(`📂 Reels    : ${CONFIG.reelsFolder}`);
   console.log(`🖼️  Cover    : ${CONFIG.coverPhoto}`);
   console.log('════════════════════════════════════════════════════════\n');
@@ -1033,104 +1009,80 @@ async function uploadAllReelsPipeline(context, caption) {
     const tabIndex = i + 1;
 
     console.log(`\n────────────────────────────────────────────────────────`);
-    console.log(`▶ [TAB ${tabIndex}/${TOTAL}] Preparing upload for R${reelNum}.mp4...`);
+    console.log(`▶ [TAB ${tabIndex}/${TOTAL}] Opening new tab for R${reelNum}.mp4...`);
     console.log(`────────────────────────────────────────────────────────`);
 
     const newPage = await context.newPage();
     pages.push(newPage);
 
-    await newPage.goto('https://www.instagram.com/', { waitUntil: 'domcontentloaded' });
-    await newPage.waitForTimeout(3500);
+    await newPage.goto(CONFIG.homeUrl, { waitUntil: 'domcontentloaded' });
+    await newPage.waitForTimeout(2000);
 
     let success = false;
     for (let attempt = 1; attempt <= 2; attempt++) {
       try {
-        await uploadSingleReelOnPage(newPage, reelNum, caption, tabIndex);
+        await uploadSingleReelFast(newPage, reelNum, caption, tabIndex);
         success = true;
         break;
       } catch (err) {
         const errMsg = `❌ [TAB ${tabIndex}] Attempt ${attempt} failed: ${err.message}`;
         console.error(errMsg);
-        try { fs.appendFileSync(path.join(__dirname, 'automation.log'), `[${new Date().toISOString()}] ${errMsg}\n${err.stack}\n`); } catch { }
+        logMessage(errMsg);
         await debugScreenshot(newPage, `tab${tabIndex}_attempt${attempt}_fail`);
         if (attempt < 2) {
-          console.log(`🔄 Retrying Tab ${tabIndex} in 3 seconds...`);
+          console.log(`🔄 Retrying Tab ${tabIndex} in 2 seconds...`);
           await newPage.reload({ waitUntil: 'domcontentloaded' }).catch(() => { });
-          await newPage.waitForTimeout(3000);
+          await newPage.waitForTimeout(2000);
         }
       }
     }
 
     if (success) {
       okCount++;
-      console.log(`🎉 [TAB ${tabIndex} DONE] Share clicked! Upload running in background.`);
+      console.log(`✅ [TAB ${tabIndex}/${TOTAL}] Reel R${reelNum}.mp4 shared! (Uploading in background)`);
     } else {
       failCount++;
-      console.error(`🚨 [TAB ${tabIndex} FAILED] Could not complete upload after 2 attempts.`);
-      console.error(`   Stopping pipeline to avoid opening more broken tabs.`);
-      break; // HALT — don't open more tabs if one fails
+      console.error(`🚨 [TAB ${tabIndex}/${TOTAL}] Failed to share R${reelNum}.mp4.`);
     }
 
     if (i < TOTAL - 1) {
-      console.log(`🚀 Opening Tab ${tabIndex + 1} immediately for next reel...\n`);
+      console.log(`⚡ Opening Tab ${tabIndex + 1} immediately for next reel (no waiting!)...\n`);
     }
   }
 
-  // ── Summary ───────────────────────────────────────────────────────────────
   console.log('\n════════════════════════════════════════════════════════');
-  console.log(`📊 Pipeline complete — ✅ ${okCount} uploads | ❌ ${failCount} errors`);
+  console.log(`📊 All 20 reels dispatched — ✅ ${okCount} shares initiated | ❌ ${failCount} errors`);
   console.log('════════════════════════════════════════════════════════');
 
-  if (okCount === 0) {
-    console.error('\n⚠️ [NOTICE] 0 reels were uploaded successfully. Closing tabs to proceed.');
-    for (const p of pages) await p.close().catch(() => { });
-    return;
-  }
-
-  // ── Keep tabs open for manual verification ────────────────────────────────
-  console.log('\n');
-  console.log('╔══════════════════════════════════════════════════════════╗');
-  console.log('║   🔍  MANUAL CHECK — DO NOT CLOSE THE BROWSER           ║');
-  console.log('╠══════════════════════════════════════════════════════════╣');
-  console.log('║  All tabs are open. Check EACH tab and confirm:         ║');
-  console.log('║    ✅  "Your reel has been shared." message appears, OR ║');
-  console.log('║    ✅  The reel is visible on the profile.              ║');
-  console.log('║                                                          ║');
-  console.log('║  Once verified, press ENTER below.                      ║');
-  console.log('╚══════════════════════════════════════════════════════════╝');
-  console.log('\n');
-
-  await promptTerminalInput('>> Press ENTER after verifying all reels: ');
-
-  console.log('\n[INFO] Closing all upload tabs...');
-  for (const p of pages) await p.close().catch(() => { });
-  console.log('✅ All tabs closed. Proceeding to logout.\n');
+  // STEP 4: Prompt user with Done / Not Done verification popup
+  await promptDoneOrNotDone(pages);
 }
 
 // ==========================================
-// LOGOUT
+// STEP 5: LOGOUT
 // ==========================================
 async function logoutAccount(page, context) {
   console.log('\n==============================================');
-  console.log('🚪 [LOGOUT] Logging out of account...');
+  console.log('🚪 [STEP 5] Logging out of account...');
   console.log('==============================================');
 
   try {
-    const moreBtn = page.locator(
-      'svg[aria-label="Settings"], svg[aria-label="More options"], ' +
-      'a:has-text("More"), span:has-text("More"), ' +
-      'div[role="button"]:has-text("More"), ' +
-      'a:has-text("その他"), span:has-text("その他"), ' +
-      'div[role="button"]:has-text("その他")'
-    ).first();
+    const moreBtn = page.locator([
+      'svg[aria-label="Settings"]',
+      'svg[aria-label="More options"]',
+      'a:has-text("More")',
+      'span:has-text("More")',
+      'div[role="button"]:has-text("More")',
+      'a:has-text("その他")',
+      'span:has-text("その他")',
+    ].join(', ')).first();
 
     if (await moreBtn.isVisible({ timeout: 3000 }).catch(() => false)) {
       await moreBtn.click();
       await page.waitForTimeout(1500);
 
       const logoutOption = page.locator(
-        'span:has-text("Log out"), div:has-text("Log out"), button:has-text("Log out"), ' +
-        'span:has-text("ログアウト"), div:has-text("ログアウト"), button:has-text("ログアウト")'
+        'span:has-text("Log out"), div:has-text("Log out"), button:has-text("Log out"), span:has-text("ログアウト"), div:has-text("ログアウト")'
       ).first();
       if (await logoutOption.isVisible({ timeout: 3000 }).catch(() => false)) {
         await logoutOption.click();
@@ -1139,40 +1091,41 @@ async function logoutAccount(page, context) {
     }
   } catch { }
 
+  try {
+    await page.goto('https://www.instagram.com/accounts/logout/', { waitUntil: 'domcontentloaded', timeout: 10000 }).catch(() => { });
+  } catch { }
+
   await context.clearCookies().catch(() => { });
   console.log('✅ [SUCCESS] Logged out! Ready for next account cycle.\n');
 }
 
 // ==========================================
-// SINGLE ACCOUNT CYCLE
+// SINGLE ACCOUNT FULL CYCLE (Steps 1 to 5)
 // ==========================================
 async function runSingleAccountCycle(page, context, cycleNum) {
-  console.log(`\n==============================================`);
-  console.log(`🚀 [CYCLE #${cycleNum}] Starting Account Creation`);
-  console.log(`==============================================`);
+  console.log(`\n╔════════════════════════════════════════════════════════════╗`);
+  console.log(`║  🚀 [CYCLE #${cycleNum}] STARTING FULL INSTAGRAM AUTOMATION         ║`);
+  console.log(`╚════════════════════════════════════════════════════════════╝\n`);
 
-  // STEP 1: Go to sign-up page
+  // STEP 1: Navigate to Sign-Up
   console.log('[STEP 1] Navigating to Instagram sign-up page...');
   await page.goto(CONFIG.signupUrl, { waitUntil: 'domcontentloaded' });
   await page.waitForTimeout(2000);
   await handleCookieConsent(page);
 
-  // STEP 2: Ask for Email
-  const targetEmail = await promptForEmailInBrowser(page, cycleNum);
-  console.log(`✅ [INFO] Received email: ${targetEmail}`);
+  // User input: Email
+  const targetEmail = await promptForEmail(page, cycleNum);
+  console.log(`✅ [INFO] Target Email: ${targetEmail}`);
 
   let currentUsername = generateDynamicUsername(CONFIG.baseUsername);
   let currentPassword = generateDynamicPassword();
-  console.log(`👤 Initial Username: ${currentUsername}`);
+  console.log(`👤 Initial Username : ${currentUsername}`);
   console.log(`🔑 Generated Password: ${currentPassword}`);
 
-  // STEP 3: Fill Details
-  console.log('[STEP 3] Filling sign-up form fields...');
-
+  // Fill Details
+  console.log('[INFO] Filling sign-up form fields...');
   const emailInput = page.locator(
-    'label:has-text("Mobile number or email") input, ' +
-    'input[placeholder*="Mobile number or email"], ' +
-    'input[name="emailOrPhone"], input[name="email"]'
+    'label:has-text("Mobile number or email") input, input[placeholder*="Mobile number or email"], input[name="emailOrPhone"], input[name="email"]'
   ).first();
   await emailInput.waitFor({ state: 'visible', timeout: 15000 });
   await emailInput.fill(targetEmail);
@@ -1197,13 +1150,10 @@ async function runSingleAccountCycle(page, context, cycleNum) {
   await usernameInput.waitFor({ state: 'visible', timeout: 5000 });
   await usernameInput.fill(currentUsername);
 
-  // STEP 4: Submit & Verify Username
-  console.log('[STEP 4] Submitting form with username verification...');
+  // Submit with retry on taken username
+  console.log('[INFO] Submitting form with username conflict verification...');
   const submitBtn = page.locator(
-    'div[role="button"]:has-text("Submit"), button:has-text("Submit"), ' +
-    'button[type="submit"], button:has-text("Next"), ' +
-    'div[role="button"]:has-text("送信"), button:has-text("送信"), ' +
-    'div[role="button"]:has-text("次へ"), button:has-text("次へ")'
+    'div[role="button"]:has-text("Submit"), button:has-text("Submit"), button[type="submit"], button:has-text("Next"), div[role="button"]:has-text("送信"), button:has-text("送信"), div[role="button"]:has-text("次へ"), button:has-text("次へ")'
   ).first();
   const finalUsername = await submitWithUsernameVerification(
     page, usernameInput, submitBtn, CONFIG.baseUsername, 10, currentUsername
@@ -1220,11 +1170,16 @@ async function runSingleAccountCycle(page, context, cycleNum) {
     return;
   }
 
-  // STEP 5: Wait for OTP or Direct Login
-  console.log('[STEP 5] Waiting for OTP or direct login...');
-
-  const otpSelector = 'input[name="email_confirmation_code"], input[name="verificationCode"], input[autocomplete="one-time-code"], input[placeholder*="confirmation code" i], input[placeholder*="Code" i], input[maxlength="6"]';
-  const notNowSelector = 'button:has-text("Not Now"), button:has-text("Not now"), button:has-text("後で"), button:has-text("今はしない"), button:has-text("Save info"), button:has-text("Save Info"), button:has-text("Skip"), button:has-text("スキップ")';
+  // Check for OTP or Direct Login
+  console.log('[INFO] Checking for OTP or direct login...');
+  const otpSelector = [
+    'input[name="email_confirmation_code"]',
+    'input[name="verificationCode"]',
+    'input[autocomplete="one-time-code"]',
+    'input[placeholder*="confirmation code" i]',
+    'input[placeholder*="Code" i]',
+    'input[maxlength="6"]',
+  ].join(', ');
   const profileSelector = 'a:has-text("Profile"), a[role="link"]:has(img[alt*="profile" i]), span:has-text("Profile"), span:has-text("プロフィール")';
 
   let nextStep = 'UNKNOWN';
@@ -1234,14 +1189,14 @@ async function runSingleAccountCycle(page, context, cycleNum) {
       return;
     }
 
-    // Auto-dismiss any popup as soon as it appears
-    await dismissAllPopups(page, 2);
+    await dismissAllPopups(page, 1);
 
-    if (await page.locator(notNowSelector).first().isVisible().catch(() => false) ||
-      await page.locator(profileSelector).first().isVisible().catch(() => false) ||
+    if (
+      (await page.locator(profileSelector).first().isVisible().catch(() => false)) ||
       page.url() === 'https://www.instagram.com/' ||
       page.url().includes('instagram.com/?') ||
-      (!page.url().includes('emailsignup') && !page.url().includes('challenge'))) {
+      (!page.url().includes('emailsignup') && !page.url().includes('challenge'))
+    ) {
       nextStep = 'LOGGED_IN';
       break;
     }
@@ -1251,126 +1206,63 @@ async function runSingleAccountCycle(page, context, cycleNum) {
       break;
     }
 
-    await page.waitForTimeout(1500);
+    await page.waitForTimeout(1000);
   }
 
   if (nextStep === 'OTP') {
-    console.log('\n==========================================================');
-    console.log('🔑 [OTP REQUIRED] Please enter the OTP directly on the browser screen!');
-    console.log('   The script is actively watching and will auto-continue');
-    console.log('   the moment you submit.');
-    console.log('==========================================================\n');
-
-    // Poll up to 120 seconds waiting for user to verify OTP in browser
-    for (let w = 0; w < 120; w++) {
-      await dismissAllPopups(page, 1);
-
-      const currentUrl = page.url();
-      if (!currentUrl.includes('emailsignup') ||
-        currentUrl === 'https://www.instagram.com/' ||
-        currentUrl.includes('instagram.com/?') ||
-        await page.locator('text="Turn on Notifications"').isVisible().catch(() => false)) {
-        console.log('✅ [SUCCESS] OTP verified and logged into Instagram!');
-        break;
-      }
-
-      if (await checkAndHandleSuspendedCheckpoint(page)) {
-        await context.clearCookies().catch(() => { });
-        return;
-      }
-
-      await page.waitForTimeout(1000);
+    const otpSuccess = await handleOtpVerification(page);
+    if (!otpSuccess) {
+      console.log('⚠️ [WARN] OTP verification failed or checkpoint detected.');
+      await context.clearCookies().catch(() => { });
+      return;
     }
-  } else if (nextStep === 'LOGGED_IN') {
-    console.log('✅ [INFO] Direct login detected!');
-  } else {
-    console.log('[INFO] Proceeding to clear onboarding popups...');
   }
 
-  // STEP 6: Dismiss all onboarding popups (Save info, Turn on notifications, Skip photo, etc.)
-  console.log('[STEP 6] Clearing all onboarding popups...');
+  // Clear onboarding popups (Notifications -> Not Now, Save Info -> Not Now)
+  console.log('[STEP 1 Complete] Dismissing all onboarding popups...');
+  await dismissAllPopups(page, 6);
 
-  // Keep dismissing until we land on a stable page (no more popups for 3 consecutive checks)
-  let stableCount = 0;
-  for (let attempt = 0; attempt < 20 && stableCount < 3; attempt++) {
-    // Explicitly handle "Turn on Notifications" / "Not Now" with DOM evaluate
-    const dismissed = await page.evaluate(() => {
-      const dismissWords = [
-        'not now', '後で', '今はしない',
-        'save info', 'save information', '情報を保存',
-        'skip', 'スキップ',
-        'cancel', 'キャンセル',
-        'close', '閉じる',
-        'turn on', // skip "Turn On" button, prefer "Not Now"
-      ];
-      const skipWords = ['not now', '後で', '今はしない', 'skip', 'スキップ', 'save info', '情報を保存'];
-      const allBtns = Array.from(document.querySelectorAll('button, div[role="button"], span[role="button"]'));
-
-      // Prefer "Not Now" / "Skip" over "Turn On"
-      for (const el of allBtns) {
-        const t = (el.innerText || el.textContent || '').trim().toLowerCase();
-        if (skipWords.includes(t)) {
-          el.click();
-          return t;
-        }
-      }
-      return null;
-    }).catch(() => null);
-
-    if (dismissed) {
-      console.log(`🔔 [POPUP] Cleared "${dismissed}" (step 6 loop)`);
-      await page.waitForTimeout(1500);
-      stableCount = 0;
-      continue;
-    }
-
-    await dismissAllPopups(page, 2);
-    await page.waitForTimeout(1000);
-    stableCount++;
-  }
-
-  // Navigate to home to ensure we're on the feed
-  const currentUrl = page.url();
-  if (!currentUrl.includes('instagram.com/') || currentUrl.includes('emailsignup') || currentUrl.includes('challenge')) {
-    console.log('[STEP 6] Navigating to Instagram home feed...');
-    await page.goto('https://www.instagram.com/', { waitUntil: 'domcontentloaded' });
+  if (page.url().includes('emailsignup')) {
+    await page.goto(CONFIG.homeUrl, { waitUntil: 'domcontentloaded' });
     await page.waitForTimeout(3000);
-    await dismissAllPopups(page, 6);
+    await dismissAllPopups(page, 4);
   }
-  console.log('✅ [STEP 6] All popups dismissed. On home feed.');
 
-  // STEP 7: Edit Profile — Add Bio + Profile Photo
-  await addBioToProfile(page, CONFIG.bioText, currentUsername);
-  await page.waitForTimeout(4000);
-
-  // Save credentials to accounts.txt
+  // Save account to accounts.txt
   const accountDetails = `Email: ${targetEmail} | Username: ${currentUsername} | Password: ${currentPassword}\n`;
-  const savePath = path.join(__dirname, 'accounts.txt');
-  fs.appendFileSync(savePath, accountDetails);
+  fs.appendFileSync(CONFIG.accountsFile, accountDetails);
   console.log(`💾 [SAVED] ${accountDetails.trim()}`);
-  console.log(`📄 [FILE]  ${savePath}`);
+  console.log(`📄 [FILE]  ${CONFIG.accountsFile}`);
 
-  // STEP 8: Upload 20 Reels in pipeline fashion
-  const captionPath = path.join(__dirname, 'Reels', 'CAPTION.txt');
-  const reelCaption = fs.existsSync(captionPath)
-    ? fs.readFileSync(captionPath, 'utf8').trim()
-    : CONFIG.reelCaption;
-  console.log(`[INFO] Loaded Reel caption from ${captionPath} (${reelCaption.length} characters)`);
+  // STEP 2: Profile photo & Bio update
+  await addBioToProfile(page, CONFIG.bioText, currentUsername);
+  await page.waitForTimeout(3000);
+
+  // STEP 3 & 4: Upload 20 reels in fast non-blocking mode & prompt Done / Not Done
+  const reelCaption = loadReelCaption();
+  console.log(`[INFO] Loaded Reel caption (${reelCaption.length} chars)`);
   await uploadAllReelsPipeline(context, reelCaption);
 
-  // STEP 9: Logout
+  // STEP 5: Logout and complete cycle
   await logoutAccount(page, context);
+  console.log(`🎉 [CYCLE #${cycleNum} COMPLETE] Finished account @${currentUsername}!\n`);
 }
 
 // ==========================================
-// MAIN LOOP
+// MAIN AUTOMATION LOOP
 // ==========================================
 async function startAutomationLoop() {
-  console.log('=============================================================');
-  console.log('🚀 INSTAGRAM AUTOMATION LOOP STARTED');
-  console.log('   Script will create account -> add bio -> upload reels -> logout -> repeat!');
-  console.log('   To stop at any time, press Ctrl+C in this terminal.');
-  console.log('=============================================================\n');
+  console.log('╔════════════════════════════════════════════════════════════╗');
+  console.log('║  🚀 INSTAGRAM AUTONOMOUS 5-STEP PIPELINE (INFINITE LOOP)   ║');
+  console.log('╠════════════════════════════════════════════════════════════╣');
+  console.log('║  1. Create account (You only provide Email & OTP)          ║');
+  console.log('║  2. Upload Profile Photo & Japanese Bio                    ║');
+  console.log('║  3. Upload all 20 Reels (Fast non-blocking tabs)           ║');
+  console.log('║  4. Show "Done" or "Not Done" verification pop-up          ║');
+  console.log('║  5. Logout & start creating new account automatically!     ║');
+  console.log('║                                                            ║');
+  console.log('║  To stop at any time, press Ctrl+C in this terminal.       ║');
+  console.log('╚════════════════════════════════════════════════════════════╝\n');
 
   const launchOptions = {
     headless: CONFIG.headless,
@@ -1378,6 +1270,7 @@ async function startAutomationLoop() {
   };
   if (CONFIG.browserPath && fs.existsSync(CONFIG.browserPath)) {
     launchOptions.executablePath = CONFIG.browserPath;
+    console.log(`ℹ️  [INFO] Using browser: ${CONFIG.browserPath}`);
   }
 
   const browser = await chromium.launch(launchOptions);
@@ -1396,7 +1289,7 @@ async function startAutomationLoop() {
       try {
         await runSingleAccountCycle(page, context, cycle);
         cycle++;
-        console.log(`\n⏳ Preparing next cycle in 3 seconds...\n`);
+        console.log(`\n⏳ Starting Cycle #${cycle} in 3 seconds...\n`);
         await page.waitForTimeout(3000);
       } catch (cycleError) {
         console.error(`❌ [ERROR in Cycle #${cycle}]:`, cycleError.message);
@@ -1406,9 +1299,20 @@ async function startAutomationLoop() {
       }
     }
   } finally {
+    closeReadline();
     await browser.close().catch(() => { });
   }
 }
 
-// Start the loop
-startAutomationLoop();
+// Start the automation
+if (require.main === module) {
+  startAutomationLoop();
+}
+
+module.exports = {
+  startAutomationLoop,
+  runSingleAccountCycle,
+  uploadAllReelsPipeline,
+  uploadSingleReelFast,
+  promptDoneOrNotDone,
+};

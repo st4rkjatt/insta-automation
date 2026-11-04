@@ -7,9 +7,11 @@
     "test": "echo \"Error: no test specified\" && exit 1",
     "start": "node manage.js",
     "manage": "node manage.js",
+    "signup": "node signup.js",
+    "loop": "node signup.js",
+    "signup:loop": "node signup.js",
     "upload:single": "node upload_single.js",
-    "update:bio": "node update_bio_only.js",
-    "signup:loop": "node signup.js"
+    "update:bio": "node update_bio_only.js"
   },
   "keywords": [],
   "author": "",
