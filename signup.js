@@ -21,6 +21,20 @@ const { chromium } = require('playwright');
 const readline = require('node:readline/promises');
 const { stdin: input, stdout: output } = require('node:process');
 
+function resolveBrowserPath() {
+  if (process.platform === 'darwin') {
+    const macBrave = '/Applications/Brave Browser.app/Contents/MacOS/Brave Browser';
+    if (fs.existsSync(macBrave)) return macBrave;
+    const macChrome = '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome';
+    if (fs.existsSync(macChrome)) return macChrome;
+  } else if (process.platform === 'win32') {
+    const localAppData = process.env.LOCALAPPDATA || '';
+    const winBrave = path.join(localAppData, 'BraveSoftware', 'Brave-Browser', 'Application', 'brave.exe');
+    if (fs.existsSync(winBrave)) return winBrave;
+  }
+  return undefined;
+}
+
 // ==========================================
 // CONFIGURATION
 // ==========================================
@@ -31,18 +45,18 @@ const CONFIG = {
   baseUsername: 'link.in.bio.',
   bioText: `TVアニメ『紫禁城・御猫房』10月10日放送開始! 宮廷に隠された秘密とは? みんなは観たい?\nコメントで教えてね`,
   reelCaption: `! TVアニメ『紫禁・御猫房』10月10日放送開始宮廷に隠された秘密とは? みんなは観たい? コメントで教えてね!\n\n#紫禁御猫房 #新作アニメ\n\n#拡散希望 #猫\n\n《紫禁・御猫房》\n\n#紫禁御猫房\n\n新作アニメ\n\n拡散希望\n\n猫`,
-  browserPath: 'C:\\Users\\yashs\\AppData\\Local\\BraveSoftware\\Brave-Browser\\Application\\brave.exe',
+  browserPath: resolveBrowserPath(),
   headless: false,
   slowMo: 100,
 
   // ── Reel file settings ──────────────────────────
-  reelsFolder:        'C:\\Users\\yashs\\Downloads\\instaAuto\\instaAuto\\Reels',
-  reelPrefix:         'R',
-  reelExtension:      '.mp4',
-  numUniqueReels:     5,
+  reelsFolder: path.join(__dirname, 'Reels'),
+  reelPrefix: 'R',
+  reelExtension: '.mp4',
+  numUniqueReels: 5,
   totalReelsToUpload: 20,
-  coverPhoto:         'C:\\Users\\yashs\\Downloads\\instaAuto\\instaAuto\\Reels\\Cover.jpg',
-  profilePhoto:       'C:\\Users\\yashs\\Downloads\\Profile Photo.jpg',
+  coverPhoto: path.join(__dirname, 'Reels', 'Cover.jpg'),
+  profilePhoto: path.join(__dirname, 'profile.jpg'),
 };
 
 // ==========================================
@@ -247,7 +261,7 @@ async function dismissAllPopups(page, maxRounds = 8) {
         const item = notNow.nth(i);
         if (await item.isVisible().catch(() => false)) {
           console.log('🔔 [POPUP] Dismissed "Not Now"...');
-          await item.click({ force: true }).catch(() => {});
+          await item.click({ force: true }).catch(() => { });
           await page.waitForTimeout(1500);
           closedAny = true;
           break;
@@ -267,7 +281,7 @@ async function dismissAllPopups(page, maxRounds = 8) {
         const item = saveInfo.nth(i);
         if (await item.isVisible().catch(() => false)) {
           console.log('🔔 [POPUP] Dismissed "Save info"...');
-          await item.click({ force: true }).catch(() => {});
+          await item.click({ force: true }).catch(() => { });
           await page.waitForTimeout(1500);
           closedAny = true;
           break;
@@ -286,7 +300,7 @@ async function dismissAllPopups(page, maxRounds = 8) {
         const item = skip.nth(i);
         if (await item.isVisible().catch(() => false)) {
           console.log('🔔 [POPUP] Dismissed "Skip"...');
-          await item.click({ force: true }).catch(() => {});
+          await item.click({ force: true }).catch(() => { });
           await page.waitForTimeout(1500);
           closedAny = true;
           break;
@@ -302,7 +316,7 @@ async function dismissAllPopups(page, maxRounds = 8) {
     ).first();
     if (await closeIcon.isVisible({ timeout: 800 }).catch(() => false)) {
       console.log('🔔 [POPUP] Dismissed dialog close icon (X)...');
-      await closeIcon.click({ force: true }).catch(() => {});
+      await closeIcon.click({ force: true }).catch(() => { });
       await page.waitForTimeout(1500);
       closedAny = true;
       continue;
@@ -310,7 +324,7 @@ async function dismissAllPopups(page, maxRounds = 8) {
 
     // 5. Escape key press as fallback
     if (!closedAny && r === 0) {
-      await page.keyboard.press('Escape').catch(() => {});
+      await page.keyboard.press('Escape').catch(() => { });
       await page.waitForTimeout(500);
     }
 
@@ -571,7 +585,7 @@ async function uploadSingleReelOnPage(page, reelNum, caption, tabIndex) {
     console.log(text);
     try {
       fs.appendFileSync(path.join(__dirname, 'automation.log'), `[${new Date().toISOString()}] ${text}\n`);
-    } catch {}
+    } catch { }
   };
 
   log(`▶ Starting upload: R${reelNum}.mp4`);
@@ -615,7 +629,13 @@ async function uploadSingleReelOnPage(page, reelNum, caption, tabIndex) {
   ).first();
   if (await postItem.isVisible({ timeout: 2000 }).catch(() => false)) {
     log('  Selecting "Post" from menu...');
-    await postItem.click();
+    const clickedViaDom = await postItem.evaluate((el) => {
+      el.click();
+      return true;
+    }).catch(() => false);
+    if (!clickedViaDom) {
+      await postItem.click({ force: true }).catch(() => { });
+    }
     await page.waitForTimeout(2000);
   }
 
@@ -722,7 +742,7 @@ async function uploadSingleReelOnPage(page, reelNum, caption, tabIndex) {
     ).first();
     if (await okBtn.isVisible().catch(() => false)) {
       log('  Reels info OK button detected during wait — clicking OK!');
-      await okBtn.click({ force: true }).catch(() => {});
+      await okBtn.click({ force: true }).catch(() => { });
       videoUploaded = true;
       break;
     }
@@ -753,7 +773,7 @@ async function uploadSingleReelOnPage(page, reelNum, caption, tabIndex) {
       const btns = Array.from(document.querySelectorAll('div[role="dialog"] button, div[role="dialog"] [role="button"]'));
       const ok = btns.find(b => (b.innerText || '').trim().toUpperCase() === 'OK' || (b.innerText || '').includes('了解'));
       if (ok) ok.click();
-    }).catch(() => {});
+    }).catch(() => { });
   }
 
   // ── 5. Crop step: set 9:16 if visible ─────────────────────────────────────
@@ -780,116 +800,174 @@ async function uploadSingleReelOnPage(page, reelNum, caption, tabIndex) {
   await clickNextInDialog(page, log);
 
   // ── 7. Edit step: upload cover/thumbnail ──────────────────────────────────
-  log('Step 7: Setting cover photo / thumbnail...');
+  log(`Step 7: Setting cover photo from ${CONFIG.coverPhoto}...`);
   if (fs.existsSync(CONFIG.coverPhoto)) {
     try {
-      // Look for "Cover photo" tab
-      const coverTab = page.locator('div[role="dialog"]').locator(
-        'div[role="tab"]:has-text("Cover photo"), div[role="tab"]:has-text("Cover"), ' +
-        'button:has-text("Cover photo"), button:has-text("Cover"), ' +
-        'span:has-text("Cover photo"), span:text-is("Cover"), ' +
-        'div[role="tab"]:has-text("カバー写真"), div[role="tab"]:has-text("カバー"), ' +
-        'button:has-text("カバー写真"), button:has-text("カバー"), ' +
-        'span:has-text("カバー写真"), span:text-is("カバー")'
-      ).first();
+      // 1. Direct check for "Select From Computer" button (standard Instagram Edit modal layout)
+      const selectCover = page.locator('div[role="dialog"]').locator([
+        'button:has-text("Select From Computer")',
+        'button:has-text("Select from computer")',
+        '[role="button"]:has-text("Select From Computer")',
+        '[role="button"]:has-text("Select from computer")',
+        'div[role="button"]:has-text("Select From Computer")',
+        'button:has-text("コンピューターから選択")',
+        '[role="button"]:has-text("コンピューターから選択")',
+        'span:text-is("Select From Computer")',
+        'button:has-text("Select from")',
+      ].join(', ')).first();
 
-      const coverVisible = await coverTab.waitFor({ state: 'visible', timeout: 4000 }).then(() => true).catch(() => false);
-      if (coverVisible) {
-        log('  Clicking Cover photo tab...');
-        await coverTab.click();
-        await page.waitForTimeout(2000);
+      let selectCoverVisible = await selectCover.isVisible({ timeout: 2500 }).catch(() => false);
 
-        // Click "Select from computer" inside the cover photo panel
-        const selectCover = page.locator('div[role="dialog"]').locator(
-          'button:has-text("Select from computer"), button:has-text("コンピューターから選択"), ' +
-          'div[role="button"]:has-text("Select from computer"), div[role="button"]:has-text("コンピューターから選択"), ' +
-          'button:has-text("Select from"), [role="button"]:has-text("Select from")'
+      // 2. If not directly visible, check if a Cover tab must be clicked
+      if (!selectCoverVisible) {
+        const coverTab = page.locator('div[role="dialog"]').locator(
+          'div[role="tab"]:has-text("Cover photo"), div[role="tab"]:has-text("Cover"), ' +
+          'button:has-text("Cover photo"), button:has-text("Cover"), ' +
+          'span:has-text("Cover photo"), span:text-is("Cover"), ' +
+          'div[role="tab"]:has-text("カバー写真"), div[role="tab"]:has-text("カバー")'
         ).first();
 
-        const selectCoverVisible = await selectCover.waitFor({ state: 'visible', timeout: 3000 }).then(() => true).catch(() => false);
-        if (selectCoverVisible) {
-          const [coverFc] = await Promise.all([
-            page.waitForEvent('filechooser', { timeout: 10000 }),
-            selectCover.click({ force: true }),
-          ]);
-          await coverFc.setFiles(CONFIG.coverPhoto);
-          log('  ✅ Cover photo uploaded via file chooser!');
+        if (await coverTab.isVisible({ timeout: 2000 }).catch(() => false)) {
+          log('  Clicking Cover photo tab...');
+          await coverTab.click({ force: true });
+          await page.waitForTimeout(1500);
+          selectCoverVisible = await selectCover.isVisible({ timeout: 2000 }).catch(() => false);
+        }
+      }
+
+      if (selectCoverVisible) {
+        log('  Clicking "Select From Computer" for Cover.jpg...');
+        const [coverFc] = await Promise.all([
+          page.waitForEvent('filechooser', { timeout: 10000 }),
+          selectCover.click({ force: true }),
+        ]);
+        await coverFc.setFiles(CONFIG.coverPhoto);
+        log('  ✅ Cover photo uploaded via file chooser!');
+        await page.waitForTimeout(3000);
+      } else {
+        const dialogInputs = page.locator('div[role="dialog"] input[type="file"], input[type="file"]');
+        if (await dialogInputs.count() > 0) {
+          await dialogInputs.last().setInputFiles(CONFIG.coverPhoto);
+          log('  ✅ Cover photo uploaded via dialog file input!');
           await page.waitForTimeout(3000);
         } else {
-          const dialogInputs = page.locator('div[role="dialog"] input[type="file"], input[type="file"]');
-          if (await dialogInputs.count() > 0) {
-            await dialogInputs.last().setInputFiles(CONFIG.coverPhoto);
-            log('  ✅ Cover photo uploaded via dialog file input!');
-            await page.waitForTimeout(3000);
-          }
+          log('  ⚠️ "Select From Computer" button not found.');
         }
-      } else {
-        log('  ⚠️ Cover photo tab not visible.');
       }
     } catch (e) {
       log(`  Cover photo notice: ${e.message}`);
     }
+  } else {
+    log(`  ⚠️ Cover photo file not found at: ${CONFIG.coverPhoto}`);
   }
 
   // ── 8. Click "Next" to advance past edit/cover step ───────────────────────
-  log('Step 8: Clicking Next (past edit)...');
-  await clickNextInDialog(page, log);
+log('Step 8: Clicking Next (past edit)...');
+await clickNextInDialog(page, log);
 
-  // ── 9. Caption step: fill in caption text ─────────────────────────────────
-  log('Step 9: Filling caption...');
-  const captionBox = page.locator('div[role="dialog"]').locator(
-    'div[role="textbox"][aria-label*="caption" i], ' +
-    'div[role="textbox"][aria-label*="キャプション" i], ' +
-    'div[aria-label*="caption" i][contenteditable="true"], ' +
-    'div[aria-label*="キャプション" i][contenteditable="true"], ' +
-    'div[contenteditable="true"]'
-  ).first();
+// ── 9. Caption step: fill in caption text ─────────────────────────────────
+log('Step 9: Filling caption...');
+const captionBox = page.locator('div[role="dialog"]').locator(
+  'div[role="textbox"][aria-label*="caption" i], ' +
+  'div[role="textbox"][aria-label*="キャプション" i], ' +
+  'div[aria-label*="caption" i][contenteditable="true"], ' +
+  'div[aria-label*="キャプション" i][contenteditable="true"], ' +
+  'div[contenteditable="true"]'
+).first();
 
-  await captionBox.waitFor({ state: 'visible', timeout: 15000 });
-  await captionBox.click();
-  await captionBox.focus();
-  await page.waitForTimeout(300);
+await captionBox.waitFor({ state: 'visible', timeout: 15000 });
+await captionBox.click();
+await captionBox.focus();
+await page.waitForTimeout(300);
 
-  await captionBox.evaluate((el, text) => {
-    el.focus();
-    document.execCommand('selectAll', false, null);
-    document.execCommand('insertText', false, text);
-    el.dispatchEvent(new Event('input', { bubbles: true }));
-  }, caption);
-  await page.waitForTimeout(1000);
+const isMac = process.platform === 'darwin';
+await page.keyboard.press(isMac ? 'Meta+A' : 'Control+A');
+await page.keyboard.press('Backspace');
+await page.waitForTimeout(200);
 
-  // Dismiss any hashtag autocomplete that may block the Share button
-  await page.keyboard.press('Escape').catch(() => {});
-  await page.waitForTimeout(500);
+// Playwright insertText preserves multiline text and hashtags cleanly
+await page.keyboard.insertText(caption);
+await page.waitForTimeout(600);
 
-  // ── 10. Click Share ───────────────────────────────────────────────────────
-  log('Step 10: Clicking Share...');
-  const shareClicked = await page.evaluate(() => {
-    const dialogs = document.querySelectorAll('div[role="dialog"]');
-    for (const dlg of dialogs) {
-      const candidates = Array.from(dlg.querySelectorAll('button, div[role="button"], span[role="button"]'));
-      for (let i = candidates.length - 1; i >= 0; i--) {
-        const text = (candidates[i].innerText || candidates[i].textContent || '').trim().toLowerCase();
-        if (text === 'share' || text === 'シェア') {
-          candidates[i].click();
-          return text;
-        }
+// Dismiss any hashtag autocomplete that may block the Share button
+await page.keyboard.press('Escape').catch(() => { });
+await page.waitForTimeout(500);
+
+// ── 10. Click Share ───────────────────────────────────────────────────────
+log('Step 10: Clicking header "Share" button...');
+let shareClicked = await page.evaluate(() => {
+  const dialogs = document.querySelectorAll('div[role="dialog"]');
+  for (const dlg of dialogs) {
+    const candidates = dlg.querySelectorAll('button, div[role="button"], span[role="button"]');
+    for (const c of candidates) {
+      const text = (c.innerText || c.textContent || '').trim();
+      if (text === 'Share' || text === 'シェア') {
+        c.click();
+        return text;
       }
     }
-    return null;
-  }).catch(() => null);
+  }
+  return null;
+}).catch(() => null);
 
-  if (!shareClicked) {
-    const shareBtn = page.locator('div[role="dialog"]').locator(
-      'div[role="button"]:has-text("Share"), button:has-text("Share"), ' +
-      'div[role="button"]:has-text("シェア"), button:has-text("シェア")'
-    ).last();
-    await shareBtn.waitFor({ state: 'visible', timeout: 15000 });
-    await shareBtn.click({ force: true });
+if (!shareClicked) {
+  const shareBtn = page.locator('div[role="dialog"]').locator([
+    'button:text-is("Share")',
+    'div[role="button"]:text-is("Share")',
+    'span[role="button"]:text-is("Share")',
+    'button:text-is("シェア")',
+    'div[role="button"]:text-is("シェア")',
+    'button:has-text("Share")',
+  ].join(', ')).first();
+  await shareBtn.waitFor({ state: 'visible', timeout: 10000 });
+  await shareBtn.click({ force: true });
+  shareClicked = 'Share';
+}
+
+log(`✅ Share clicked ("${shareClicked}"). Awaiting Instagram upload completion...`);
+
+// Wait actively for upload completion
+for (let sec = 0; sec < 45; sec++) {
+  const dialogCount = await page.locator('div[role="dialog"]').count().catch(() => 0);
+  if (dialogCount === 0) {
+    log('  Upload confirmed: Dialog closed.');
+    break;
   }
 
-  log(`✅ Share clicked — R${reelNum}.mp4 upload initiated!`);
-  await page.waitForTimeout(4000);
+  const hasShared = await page.evaluate(() => {
+    const text = (document.body.innerText || '').toLowerCase();
+    return text.includes('your reel has been shared') ||
+      text.includes('your post has been shared') ||
+      text.includes('リールがシェアされました') ||
+      text.includes('投稿がシェアされました');
+  }).catch(() => false);
+
+  if (hasShared) {
+    log('  ✅ Confirmed: "Your reel has been shared."');
+    const closeBtn = page.locator('div[role="dialog"]').locator(
+      'svg[aria-label="Close"], svg[aria-label="閉じる"], button:has-text("Close"), button:has-text("閉じる")'
+    ).first();
+    if (await closeBtn.isVisible({ timeout: 2000 }).catch(() => false)) {
+      await closeBtn.click({ force: true }).catch(() => { });
+    }
+    break;
+  }
+
+  if (sec === 4 || sec === 10) {
+    await page.evaluate(() => {
+      const dlg = document.querySelector('div[role="dialog"]');
+      if (dlg) {
+        const btn = Array.from(dlg.querySelectorAll('button, div[role="button"]')).find(b => {
+          const t = (b.innerText || '').trim();
+          return t === 'Share' || t === 'シェア';
+        });
+        if (btn) btn.click();
+      }
+    }).catch(() => { });
+  }
+
+  await page.waitForTimeout(1000);
+}
 }
 
 /**
@@ -935,7 +1013,7 @@ async function clickNextInDialog(page, log) {
 // PIPELINE: Upload 20 Reels Sequentially
 // ==========================================
 async function uploadAllReelsPipeline(context, caption) {
-  const TOTAL  = CONFIG.totalReelsToUpload; // 20
+  const TOTAL = CONFIG.totalReelsToUpload; // 20
   const UNIQUE = CONFIG.numUniqueReels;     // 5
   const seq = Array.from({ length: TOTAL }, (_, i) => (i % UNIQUE) + 1);
 
@@ -951,7 +1029,7 @@ async function uploadAllReelsPipeline(context, caption) {
   let failCount = 0;
 
   for (let i = 0; i < TOTAL; i++) {
-    const reelNum  = seq[i];
+    const reelNum = seq[i];
     const tabIndex = i + 1;
 
     console.log(`\n────────────────────────────────────────────────────────`);
@@ -973,11 +1051,11 @@ async function uploadAllReelsPipeline(context, caption) {
       } catch (err) {
         const errMsg = `❌ [TAB ${tabIndex}] Attempt ${attempt} failed: ${err.message}`;
         console.error(errMsg);
-        try { fs.appendFileSync(path.join(__dirname, 'automation.log'), `[${new Date().toISOString()}] ${errMsg}\n${err.stack}\n`); } catch {}
+        try { fs.appendFileSync(path.join(__dirname, 'automation.log'), `[${new Date().toISOString()}] ${errMsg}\n${err.stack}\n`); } catch { }
         await debugScreenshot(newPage, `tab${tabIndex}_attempt${attempt}_fail`);
         if (attempt < 2) {
           console.log(`🔄 Retrying Tab ${tabIndex} in 3 seconds...`);
-          await newPage.reload({ waitUntil: 'domcontentloaded' }).catch(() => {});
+          await newPage.reload({ waitUntil: 'domcontentloaded' }).catch(() => { });
           await newPage.waitForTimeout(3000);
         }
       }
@@ -1005,7 +1083,7 @@ async function uploadAllReelsPipeline(context, caption) {
 
   if (okCount === 0) {
     console.error('\n⚠️ [NOTICE] 0 reels were uploaded successfully. Closing tabs to proceed.');
-    for (const p of pages) await p.close().catch(() => {});
+    for (const p of pages) await p.close().catch(() => { });
     return;
   }
 
@@ -1025,7 +1103,7 @@ async function uploadAllReelsPipeline(context, caption) {
   await promptTerminalInput('>> Press ENTER after verifying all reels: ');
 
   console.log('\n[INFO] Closing all upload tabs...');
-  for (const p of pages) await p.close().catch(() => {});
+  for (const p of pages) await p.close().catch(() => { });
   console.log('✅ All tabs closed. Proceeding to logout.\n');
 }
 
@@ -1160,10 +1238,10 @@ async function runSingleAccountCycle(page, context, cycleNum) {
     await dismissAllPopups(page, 2);
 
     if (await page.locator(notNowSelector).first().isVisible().catch(() => false) ||
-        await page.locator(profileSelector).first().isVisible().catch(() => false) ||
-        page.url() === 'https://www.instagram.com/' ||
-        page.url().includes('instagram.com/?') ||
-        (!page.url().includes('emailsignup') && !page.url().includes('challenge'))) {
+      await page.locator(profileSelector).first().isVisible().catch(() => false) ||
+      page.url() === 'https://www.instagram.com/' ||
+      page.url().includes('instagram.com/?') ||
+      (!page.url().includes('emailsignup') && !page.url().includes('challenge'))) {
       nextStep = 'LOGGED_IN';
       break;
     }
@@ -1189,9 +1267,9 @@ async function runSingleAccountCycle(page, context, cycleNum) {
 
       const currentUrl = page.url();
       if (!currentUrl.includes('emailsignup') ||
-          currentUrl === 'https://www.instagram.com/' ||
-          currentUrl.includes('instagram.com/?') ||
-          await page.locator('text="Turn on Notifications"').isVisible().catch(() => false)) {
+        currentUrl === 'https://www.instagram.com/' ||
+        currentUrl.includes('instagram.com/?') ||
+        await page.locator('text="Turn on Notifications"').isVisible().catch(() => false)) {
         console.log('✅ [SUCCESS] OTP verified and logged into Instagram!');
         break;
       }
@@ -1275,8 +1353,9 @@ async function runSingleAccountCycle(page, context, cycleNum) {
   // STEP 8: Upload 20 Reels in pipeline fashion
   const captionPath = path.join(__dirname, 'Reels', 'CAPTION.txt');
   const reelCaption = fs.existsSync(captionPath)
-    ? fs.readFileSync(captionPath, 'utf8')
+    ? fs.readFileSync(captionPath, 'utf8').trim()
     : CONFIG.reelCaption;
+  console.log(`[INFO] Loaded Reel caption from ${captionPath} (${reelCaption.length} characters)`);
   await uploadAllReelsPipeline(context, reelCaption);
 
   // STEP 9: Logout
@@ -1293,11 +1372,15 @@ async function startAutomationLoop() {
   console.log('   To stop at any time, press Ctrl+C in this terminal.');
   console.log('=============================================================\n');
 
-  const browser = await chromium.launch({
-    executablePath: CONFIG.browserPath,
+  const launchOptions = {
     headless: CONFIG.headless,
     slowMo: CONFIG.slowMo,
-  });
+  };
+  if (CONFIG.browserPath && fs.existsSync(CONFIG.browserPath)) {
+    launchOptions.executablePath = CONFIG.browserPath;
+  }
+
+  const browser = await chromium.launch(launchOptions);
 
   const context = await browser.newContext({
     viewport: { width: 1280, height: 850 },
